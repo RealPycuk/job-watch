@@ -121,6 +121,30 @@ def check(cfg: Config, m: Matcher, v: Vacancy) -> Verdict:
     return Verdict(True, location=loc, level=level, matched=matched, missing=missing)
 
 
+EMAIL_RX = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zа-я]{2,}", re.I)
+EMAIL_SKIP_RX = re.compile(r"example|noreply|no-reply|sentry|rating@mail|\.(png|jpe?g|svg|webp|gif)$", re.I)
+CONTACT_LINE_RX = re.compile(r"контакт|пиш(и|ите)|писать|связ|отклик|резюме|\bhr\b|рекрутер|telegram|телеграм|\btg\b|тг\b", re.I)
+TG_HANDLE_RX = re.compile(r"(?<![\w@/.])@([a-z][\w]{4,31})\b|t\.me/([a-z][\w]{4,31})\b", re.I)
+
+
+def contacts(v: Vacancy) -> list[str]:
+    """Почта HR из полей источника и текста; в Telegram-постах — ещё ники из строк «Контакты: …», «Пишите: …»."""
+    out = list(v.contacts)
+    for e in EMAIL_RX.findall(v.text):
+        if not EMAIL_SKIP_RX.search(e) and not any(e.lower() in c.lower() for c in out):
+            out.append(e)
+    if v.source.startswith("telegram:"):
+        channel = v.source.split(":", 1)[1].lower()
+        for line in v.text.splitlines():
+            if not CONTACT_LINE_RX.search(line):
+                continue
+            for a, b in TG_HANDLE_RX.findall(line):
+                h = "@" + (a or b)
+                if h[1:].lower() != channel and h not in out and not h.lower().endswith("bot"):
+                    out.append(h)
+    return out[:3]
+
+
 def fingerprint(v: Vacancy) -> str:
     """Для склейки одной вакансии из разных источников."""
     norm = lambda s: re.sub(r"[^a-zа-яё0-9]+", "", s.lower())  # noqa: E731

@@ -105,9 +105,14 @@ class App:
         for u in users:
             extra += self.profile_of(u).search_queries()
         out = []
+        now = time.time()
         for name, fetch in sources.SOURCES.items():
             src = dict(self.cfg.source(name))
             if not src.get("enabled", False):
+                continue
+            # сайты компаний опрашиваются реже агрегаторов
+            every = int(src.get("every_minutes", 0)) * 60
+            if every and now - float(await self.store.kv_get(f"fetched:{name}", "0")) < every:
                 continue
             if "queries" in src:                     # запросы владельца из конфига + роли всех пользователей
                 src["queries"] = list(dict.fromkeys([*src["queries"], *extra]))[:12]
@@ -123,6 +128,7 @@ class App:
             if prev and prev["failures"] >= 3:
                 await self.say(self.env.owner_id, f"✅ Источник «{sources.TITLES[name]}» снова работает")
             await self.store.source_ok(name, len(found))
+            await self.store.kv_set(f"fetched:{name}", str(now))
             out += found
         return out
 
@@ -161,6 +167,11 @@ class App:
                 if await self.store.vacancy_id(v.key):
                     continue
                 counts["new"] += 1
+                if v.source in sources.ENRICH and any(analyze.check(self.cfg, m, v).ok for m in matchers.values()):
+                    try:
+                        v = await sources.enrich(self.http, v)
+                    except Exception as ex:
+                        log.warning("enrich %s failed: %s", v.url, ex)
                 fp = analyze.fingerprint(v) if v.company else ""
                 vid = await self.store.add_vacancy(v, fp)
                 for u in users:
@@ -206,6 +217,8 @@ class App:
             lines.append(f"🧩 Совпадает: {e(', '.join(matched))}")
         if missing:
             lines.append(f"➕ Не хватает: {e(', '.join(missing))}")
+        if cts := analyze.contacts(v):
+            lines.append("✉️ " + " · ".join(f"<code>{e(c)}</code>" for c in cts))
         src = sources.TITLES.get(v.source.split(":")[0], v.source)
         if v.source.startswith("telegram:"):
             src += f" @{v.source.split(':', 1)[1]}"

@@ -150,6 +150,14 @@ class Cycle(unittest.TestCase):
                     return h.to(OWNER)
         self.assertEqual(len(run(main())), 1)
 
+    def test_card_shows_hr_contacts(self):
+        async def main():
+            with tempfile.TemporaryDirectory() as d:
+                async with Harness(d) as h:
+                    await h.cycle([v(1, text="удалённо. Резюме на hr@acme.ru")])
+                    return h.to(OWNER)
+        self.assertIn("✉️ <code>hr@acme.ru</code>", run(main())[0])
+
     def test_card_escapes_html(self):
         async def main():
             with tempfile.TemporaryDirectory() as d:

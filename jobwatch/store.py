@@ -13,7 +13,7 @@ create table if not exists vacancies(
     key text not null unique,            -- source:ext_id
     source text not null, title text not null, company text, url text not null, text text,
     salary text, city text, remote integer, experience integer, published_at real, tags text,
-    fingerprint text, created_at real not null);
+    fingerprint text, created_at real not null, contacts text);
 create index if not exists idx_vac_created on vacancies(created_at);
 create table if not exists deliveries(
     user_id integer not null, vacancy_id integer not null,
@@ -43,6 +43,9 @@ class Store:
         db.row_factory = aiosqlite.Row
         await cls._migrate_v1(db, owner_id)
         await db.executescript(SCHEMA)
+        cols = {r["name"] for r in await (await db.execute("pragma table_info(vacancies)")).fetchall()}
+        if "contacts" not in cols:                       # v2 → v2.1: контакты HR
+            await db.execute("alter table vacancies add column contacts text")
         await db.commit()
         return cls(db)
 
@@ -80,10 +83,10 @@ class Store:
     async def add_vacancy(self, v: Vacancy, fingerprint: str) -> int:
         cur = await self.db.execute(
             "insert or ignore into vacancies(key, source, title, company, url, text, salary, city, remote, experience, "
-            "published_at, tags, fingerprint, created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "published_at, tags, fingerprint, created_at, contacts) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (v.key, v.source, v.title, v.company, v.url, v.text, v.salary, v.city,
              None if v.remote is None else int(v.remote), v.experience_years, v.published_at,
-             json.dumps(v.tags, ensure_ascii=False), fingerprint, time.time()))
+             json.dumps(v.tags, ensure_ascii=False), fingerprint, time.time(), json.dumps(v.contacts, ensure_ascii=False)))
         await self.db.commit()
         return cur.lastrowid or await self.vacancy_id(v.key)
 
@@ -101,7 +104,7 @@ class Store:
                        text=row["text"] or "", company=row["company"] or "", salary=row["salary"] or "",
                        city=row["city"] or "", remote=None if row["remote"] is None else bool(row["remote"]),
                        experience_years=row["experience"], published_at=row["published_at"] or 0,
-                       tags=json.loads(row["tags"] or "[]"))
+                       tags=json.loads(row["tags"] or "[]"), contacts=json.loads(row["contacts"] or "[]"))
 
     # ───────────── доставки ─────────────
 
