@@ -188,7 +188,48 @@ async def fetch_avito(session, src: dict) -> list[Vacancy]:
     return out
 
 
+def parse_selectel(page: str) -> list[Vacancy]:
+    """Карточка: направление | название | город | «Подробнее»."""
+    soup = BeautifulSoup(page, "html.parser")
+    out, seen = [], set()
+    for card in soup.select("div.card"):
+        a = next((x for x in card.select("a[href]") if re.search(r"/careers/all/vacancy/\d+/", x["href"])), None)
+        if not a:
+            continue
+        vid = re.search(r"/vacancy/(\d+)/", a["href"]).group(1)
+        parts = [t for t in card.get_text("|", strip=True).split("|") if t and t != "Подробнее"]
+        if vid in seen or len(parts) < 2:
+            continue
+        seen.add(vid)
+        out.append(Vacancy(source="selectel", ext_id=vid, title=parts[-2], url=f"https://selectel.ru/careers/all/vacancy/{vid}/",
+                           text=" · ".join(parts), company="Selectel", city=parts[-1]))
+    return out
+
+
+async def fetch_selectel(session, src: dict) -> list[Vacancy]:
+    return parse_selectel(await _get(session, "https://selectel.ru/careers/all/"))
+
+
+def parse_x5(page: str) -> list[Vacancy]:
+    """Карточка: название | формат (Офис / Гибрид / Удалённо…) | преимущества; города в списке нет — компания в Москве."""
+    soup = BeautifulSoup(page, "html.parser")
+    out, seen = [], set()
+    for a in soup.select("a[href]"):
+        m = re.fullmatch(r"/vacancy/([\w-]+)", a["href"])
+        if not m or m.group(1) in seen or not a.get_text(strip=True):
+            continue
+        seen.add(m.group(1))
+        card = a.find_parent("div") or a
+        out.append(Vacancy(source="x5", ext_id=m.group(1), title=a.get_text(" ", strip=True), url=f"https://x5.tech{a['href']}",
+                           text=card.get_text(" · ", strip=True), company="X5 Tech"))
+    return out
+
+
+async def fetch_x5(session, src: dict) -> list[Vacancy]:
+    return parse_x5(await _get(session, "https://x5.tech/vacancy"))
+
+
 SOURCES = {"yandex": fetch_yandex, "vk": fetch_vk, "sber": fetch_sber, "mts": fetch_mts,
-           "kaspersky": fetch_kaspersky, "avito": fetch_avito}
+           "kaspersky": fetch_kaspersky, "avito": fetch_avito, "selectel": fetch_selectel, "x5": fetch_x5}
 TITLES = {"yandex": "Яндекс", "vk": "VK", "sber": "Сбер", "mts": "МТС", "kaspersky": "Лаборатория Касперского",
-          "avito": "Авито"}
+          "avito": "Авито", "selectel": "Selectel", "x5": "X5 Tech"}
