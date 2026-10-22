@@ -1,0 +1,21 @@
+services:
+  job-watch:
+    build: .
+    image: job-watch:local
+    container_name: job_watch
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./config.toml:/app/config.toml:ro     # фильтры и источники меняются без пересборки
+      - ./profile.md:/app/profile.md:ro       # факты о себе для писем — только на сервере
+    # минимум прав: не root, файловая система только для чтения, без привилегий
+    user: "10002:10002"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

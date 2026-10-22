@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Lint & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt flake8
+      - name: flake8
+        run: flake8 jobwatch tests --max-line-length 140
+      - name: Config is valid
+        run: python -c "from jobwatch import config; c = config.load('config.toml'); print(len(c.skills_known), 'skills')"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  docker:
+    name: Image build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - name: Build
+        run: docker build -t job-watch:ci .
+      - name: Runs as non-root and imports
+        run: |
+          test "$(docker run --rm --entrypoint id job-watch:ci -u)" = "10002"
+          docker run --rm --entrypoint python job-watch:ci -c "import jobwatch.app"
+      - name: Compose file
+        run: cp .env.example .env && touch profile.md && docker compose config -q

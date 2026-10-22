@@ -1,0 +1,7 @@
+.git/
+.github/
+tests/
+data/
+.env
+profile.md
+__pycache__/
