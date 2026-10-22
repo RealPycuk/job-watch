@@ -45,6 +45,38 @@ enabled = true
 channels = ["devops_jobs_feed", "fordevops", "DevOpsSRE_Jobs", "job_devops", "sysadmin_jobs",
             "jobforjunior", "juno_jobs", "geekjobs", "remotegeekjob", "it_vakansii_jobs"]
 
+# ───── карьерные сайты IT-компаний: обновляются реже, поэтому опрашиваются раз в 3 часа ─────
+# Не подключены: Ozon и ЭР-Телеком (антибот-защита — обходить не будем), Альфа-Банк и Т-Банк
+# (не отвечают на запросы с зарубежных IP), Норбит (своих вакансий на сайте нет).
+
+[sources.yandex]
+enabled = true
+every_minutes = 180
+queries = ["devops", "sre", "linux", "системный администратор"]
+
+[sources.vk]
+enabled = true
+every_minutes = 180
+
+[sources.sber]                # IT-вакансии с developers.sber.ru
+enabled = true
+every_minutes = 180
+
+[sources.mts]
+enabled = true
+every_minutes = 180
+queries = ["devops", "sre", "linux", "системный администратор"]
+
+[sources.kaspersky]
+enabled = true
+every_minutes = 180
+pages = 3                     # новые вакансии — на первых страницах списка
+
+[sources.avito]               # без JavaScript сайт отдаёт только первые вакансии каждой категории
+enabled = true
+every_minutes = 180
+categories = ["razrabotka", "analitika-dannykh", "data-science", "informatsionnaya-bezopasnost"]
+
 # навыки для оценки совпадения: название = регулярное выражение
 [skills.known]
 "Linux" = '\blinux\b|ubuntu|debian|centos|rhel|astra'

@@ -15,6 +15,7 @@ class Vacancy:
     experience_years: int | None = None
     published_at: float = 0.0   # unix time, 0 — неизвестно
     tags: list[str] = field(default_factory=list)
+    contacts: list[str] = field(default_factory=list)   # почта HR и т.п., если источник даёт её отдельным полем
 
     @property
     def key(self) -> str:

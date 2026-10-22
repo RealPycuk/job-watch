@@ -123,12 +123,18 @@ def parse_trudvsem(data: dict) -> list[Vacancy]:
             ts = datetime.fromisoformat(created).replace(tzinfo=timezone(timedelta(hours=3))).timestamp()
         except ValueError:
             ts = 0.0
+        emails = [c.get("contact_value", "") for c in v.get("contact_list") or []
+                  if "почт" in str(c.get("contact_type", "")).lower() and "@" in str(c.get("contact_value", ""))]
+        if not emails and "@" in str((v.get("company") or {}).get("email") or ""):
+            emails = [v["company"]["email"]]
+        person = str(v.get("contact_person") or "").strip()
+        contacts = [f"{e} ({person.title()})" if person and i == 0 else e for i, e in enumerate(emails[:2])]
         out.append(Vacancy(source="trudvsem", ext_id=str(v.get("id") or v.get("vac_url")), title=v.get("job-name") or "",
                            url=v.get("vac_url") or "", text=text, company=(v.get("company") or {}).get("name") or "",
                            salary=sal.replace(",", " "), city=(v.get("region") or {}).get("name") or "",
                            remote=True if "дистанц" in employment.lower() else None,
                            experience_years=req.get("experience") if isinstance(req.get("experience"), int) else None,
-                           published_at=ts))
+                           published_at=ts, contacts=contacts))
     return out
 
 
@@ -204,7 +210,7 @@ TITLES = {"habr": "Хабр Карьера", "geekjob": "Geekjob", "trudvsem": "
 # ───────────── полный текст вакансии для письма ─────────────
 
 def parse_jobposting(page: str) -> str:
-    """Описание из разметки schema.org JobPosting (есть у Хабр Карьеры и Geekjob)."""
+    """Описание из разметки schema.org JobPosting, иначе — из og:description (полный текст для письма)."""
     soup = BeautifulSoup(page, "html.parser")
     for tag in soup.select('script[type="application/ld+json"]'):
         try:
@@ -214,13 +220,53 @@ def parse_jobposting(page: str) -> str:
         for d in data if isinstance(data, list) else [data]:
             if isinstance(d, dict) and d.get("@type") == "JobPosting" and d.get("description"):
                 return _clean(d["description"])
-    return ""
+    og = soup.select_one('meta[property="og:description"]')
+    return _clean(og.get("content", "")) if og else ""
+
+
+def jobposting_location(page: str) -> tuple[str, bool | None]:
+    """Город и признак удалёнки из JobPosting: addressLocality («Москва, удалённая работа») и jobLocationType."""
+    soup = BeautifulSoup(page, "html.parser")
+    for tag in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(tag.string or "")
+        except ValueError:
+            continue
+        for d in data if isinstance(data, list) else [data]:
+            if not (isinstance(d, dict) and d.get("@type") == "JobPosting"):
+                continue
+            locs = d.get("jobLocation") or []
+            loc = " ".join(str(((x or {}).get("address") or {}).get("addressLocality") or "")
+                           for x in (locs if isinstance(locs, list) else [locs]))
+            remote = True if d.get("jobLocationType") == "TELECOMMUTE" or re.search(r"удал", loc, re.I) else None
+            return loc.split(",")[0].strip(), remote
+    return "", None
+
+
+# источники, где город и формат есть только на странице вакансии — дополняются для вакансий, прошедших фильтр
+ENRICH = {"avito"}
+
+
+async def enrich(session, v: Vacancy) -> Vacancy:
+    page = await _get(session, v.url)
+    city, remote = jobposting_location(page)
+    v.city = v.city or city
+    v.remote = v.remote if v.remote is not None else remote
+    v.text = (f"{v.text}\n{parse_jobposting(page)}").strip()
+    return v
 
 
 async def full_text(session, v: Vacancy) -> str:
-    if v.source in ("habr", "geekjob"):
+    if v.source not in ("trudvsem",) and not v.source.startswith("telegram:"):
         try:
             return parse_jobposting(await _get(session, v.url)) or v.text
         except Exception:
             return v.text
     return v.text
+
+
+# карьерные сайты компаний — в отдельном модуле, регистрируются здесь же
+from . import companies  # noqa: E402
+
+SOURCES.update(companies.SOURCES)
+TITLES.update(companies.TITLES)
