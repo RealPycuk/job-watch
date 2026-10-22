@@ -167,7 +167,7 @@ class App:
                 if await self.store.vacancy_id(v.key):
                     continue
                 counts["new"] += 1
-                if v.source in sources.ENRICH and any(analyze.check(self.cfg, m, v).ok for m in matchers.values()):
+                if sources.needs_enrich(v) and any(analyze.check(self.cfg, m, v).ok for m in matchers.values()):
                     try:
                         v = await sources.enrich(self.http, v)
                     except Exception as ex:

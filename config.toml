@@ -87,6 +87,33 @@ every_minutes = 180
 enabled = true
 every_minutes = 180
 
+# Другие компании — без отдельного кода: адрес страницы со списком и регулярка для ссылок на вакансии.
+# Город и формат дочитываются со страницы вакансии, если она прошла фильтр.
+[sources.sites]
+enabled = true
+every_minutes = 180
+
+[[sources.sites.list]]
+company = "Cloud.ru"
+url = "https://cloud.ru/career/vacancies"
+link = '^https://cloud\.ru/career/vacancies/\d+$'
+
+[[sources.sites.list]]
+company = "Arenadata"
+url = "https://arenadata.tech/ru/career"
+link = '^https://arenadata\.tech/ru/career/[\w-]+$'
+
+[[sources.sites.list]]
+company = "Точка"
+url = "https://hr.tochka.com/vacancies/"
+link = '^https://hr\.tochka\.com/vacancies/catalog/[\w-]+/?$'
+russian_ca = true             # сертификат сайта выпущен удостоверяющим центром Минцифры
+
+[[sources.sites.list]]
+company = "Skyeng"
+url = "https://vacancies.skyeng.ru/"
+link = '^https://vacancies\.skyeng\.ru/[\w-]+$'
+
 [sources.avito]               # без JavaScript сайт отдаёт только первые вакансии каждой категории
 enabled = true
 every_minutes = 180

@@ -99,6 +99,25 @@ class Companies(unittest.TestCase):
         for name in ("company_ids", "companies"):
             self.assertTrue(CFG.raw["sources"]["habr" if name == "company_ids" else "trudvsem"][name])
 
+    def test_generic_site(self):
+        vs = C.parse_site(load("site_cloudru.html"), company="Cloud.ru", base_url="https://cloud.ru/career/vacancies",
+                          link=r"^https://cloud\.ru/career/vacancies/\d+$")
+        self.check_common(vs, "site:cloud-ru", "Cloud.ru", "https://cloud.ru/career/vacancies/")
+        self.assertGreaterEqual(len(vs), 5)
+        self.assertTrue(any(v.experience_years is not None for v in vs))   # «Более 6 лет», «От 3 до 6 лет» из карточки
+        self.assertTrue(all(sources.needs_enrich(v) for v in vs))
+
+    def test_generic_site_picks_richest_link(self):
+        page = ('<a href="/job/1"><img></a><a href="/job/1">Подробнее</a>'
+                '<a href="/job/1"><span>DevOps-инженер</span><span>Удалённо</span></a><a href="/about">О нас</a>')
+        vs = C.parse_site(page, company="Acme", base_url="https://acme.ru/jobs", link=r"/job/\d+$")
+        self.assertEqual([(v.title, v.text, v.url) for v in vs], [("DevOps-инженер", "DevOps-инженер · Удалённо", "https://acme.ru/job/1")])
+
+    def test_sites_in_config_are_valid(self):
+        for site in CFG.raw["sources"]["sites"]["list"]:
+            self.assertTrue(site["company"] and site["url"].startswith("https://"))
+            re.compile(site["link"])
+
     def test_jobposting_location(self):
         page = ('<script type="application/ld+json">{"@type": "JobPosting", "description": "<p>Текст</p>", "jobLocation": '
                 '{"@type": "Place", "address": {"addressLocality": "Москва, удалённая работа"}}}</script>')
