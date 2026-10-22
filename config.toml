@@ -1,0 +1,92 @@
+# Настройки job-watch. Регулярные выражения — в одинарных кавычках (TOML literal strings),
+# сравнение без учёта регистра.
+
+[schedule]
+interval_minutes = 30
+# при первом запуске источника присылать только свежие вакансии и не больше N штук
+first_run_max_age_hours = 72
+first_run_max_messages = 15
+
+[location]
+# в домашнем городе подходит любой формат (офис, гибрид, удалёнка), в остальных — только удалёнка
+home_city = "Санкт-Петербург"
+home_patterns = ['санкт[- ]?петербург', '\bспб\b', '\bпитер\w*', 'saint[- ]petersburg', 'st\.? ?petersburg', 'ленинградск\w+ обл']
+# город и формат не удалось определить (часто в Telegram-постах): notify — прислать с пометкой, skip — пропустить
+unknown = "notify"
+
+[filter]
+# подходящие роли: ищутся в заголовке и тексте
+roles = ['dev ?ops', 'devsecops', '\bsre\b', 'site reliability', 'platform engineer', 'infrastructure engineer',
+         'инфраструктурн\w+ инженер', 'инженер\w* по инфраструктуре', 'cloud engineer', 'инженер\w* эксплуатации',
+         'linux[- ]?(администратор|admin|инженер|engineer)', 'администратор\w* linux']
+# сисадмин подходит, только если в вакансии есть Linux (иначе это обычно Windows/1С/helpdesk)
+roles_need_linux = ['системн\w+ администратор', 'sysadmin', 'system administrator']
+# уровень: такие слова в заголовке — не для junior
+title_exclude = ['senior', '\blead\b', 'team ?lead', 'тимлид', '\bhead\b', 'principal', '\bstaff\b', 'architect',
+                 'архитектор', 'ведущ\w*', 'старш\w*', 'руководител\w*', 'директор', '\bcto\b', 'сень?[оё]р\w*', 'синь?[оё]р\w*', '\bleader\b']
+# посты-резюме и прочее, что не вакансия
+text_exclude = ['#резюме', '#cv\b', '#ищу_?работу', '\bищу работу\b']
+# вакансии, где явно требуется больше лет опыта, пропускаются
+max_experience_years = 2
+
+[sources.habr]
+enabled = true
+queries = ["devops", "sre", "linux", "системный администратор"]
+
+[sources.geekjob]
+enabled = true
+
+[sources.trudvsem]
+enabled = true
+queries = ["devops", "sre", "системный администратор linux", "инженер linux"]
+
+[sources.telegram]
+enabled = true
+channels = ["devops_jobs_feed", "fordevops", "DevOpsSRE_Jobs", "job_devops", "sysadmin_jobs",
+            "jobforjunior", "juno_jobs", "geekjobs", "remotegeekjob", "it_vakansii_jobs"]
+
+# навыки для оценки совпадения: название = регулярное выражение
+[skills.known]
+"Linux" = '\blinux\b|ubuntu|debian|centos|rhel|astra'
+"Docker" = '\bdocker\b'
+"Docker Compose" = 'docker[- ]?compose'
+"Kubernetes" = 'kubernetes|\bk8s\b'
+"Helm" = '\bhelm\b'
+"CI/CD" = 'ci ?/ ?cd'
+"GitHub Actions" = 'github actions'
+"GitLab CI" = 'gitlab'
+"Jenkins" = 'jenkins'
+"ArgoCD" = 'argo ?cd'
+"Ansible" = 'ansible'
+"Terraform" = 'terraform'
+"Prometheus" = 'prometheus'
+"Grafana" = 'grafana'
+"ELK" = '\belk\b|elasticsearch|kibana|opensearch'
+"Loki" = '\bloki\b'
+"Bash" = '\bbash\b|\bshell'
+"Python" = 'python'
+"Golang" = 'golang'
+"PostgreSQL" = 'postgres'
+"MySQL" = 'mysql|mariadb'
+"Redis" = '\bredis\b'
+"Kafka" = 'kafka'
+"RabbitMQ" = 'rabbitmq'
+"Nginx" = 'nginx'
+"AWS" = '\baws\b|amazon web services'
+"Yandex Cloud" = 'yandex ?cloud|яндекс ?облак'
+"Git" = '\bgit\b'
+"Сети" = 'tcp/ip|\bdns\b|маршрутизац'
+
+[skills]
+mine = ["Linux", "Docker", "Docker Compose", "Kubernetes", "CI/CD", "GitHub Actions", "Ansible", "Prometheus",
+        "Grafana", "Bash", "Python", "PostgreSQL", "Git", "Сети"]
+
+# какой репозиторий упоминать в письме, если в вакансии есть навык
+[repos]
+"CI/CD" = "https://github.com/RealPycuk/docker-deploy-rollback"
+"GitHub Actions" = "https://github.com/RealPycuk/docker-deploy-rollback"
+"Docker" = "https://github.com/RealPycuk/docker-deploy-rollback"
+"Prometheus" = "https://github.com/RealPycuk/monitoring-stack"
+"Grafana" = "https://github.com/RealPycuk/monitoring-stack"
+"Ansible" = "https://github.com/RealPycuk/ansible-server-setup"
+"Kubernetes" = "https://github.com/RealPycuk/hello-world-minikube"
