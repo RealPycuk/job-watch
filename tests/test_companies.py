@@ -1,7 +1,10 @@
 """Карьерные сайты компаний (сохранённые ответы в tests/fixtures) и извлечение контактов HR."""
+import asyncio
 import json
+import re
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from jobwatch import analyze as A
 from jobwatch import companies as C
@@ -64,6 +67,37 @@ class Companies(unittest.TestCase):
         a = C.parse_avito(load("avito.html"))
         self.check_common(a, "avito", "Авито", "https://career.avito.com/vacancies/")
         self.assertTrue(any("DevOps" in v.title for v in a))
+
+    def test_selectel(self):
+        vs = C.parse_selectel(load("selectel.html"))
+        self.check_common(vs, "selectel", "Selectel", "https://selectel.ru/careers/all/vacancy/")
+        self.assertEqual(len(vs), 24)
+        self.assertTrue(all(v.city and v.city != v.title for v in vs))
+        self.assertTrue(any(v.city == "Санкт-Петербург" for v in vs))
+
+    def test_x5(self):
+        vs = C.parse_x5(load("x5.html"))
+        self.check_common(vs, "x5", "X5 Tech", "https://x5.tech/vacancy/")
+        self.assertGreaterEqual(len(vs), 15)
+        self.assertTrue(any(re.search(r"Офис|Гибрид|Удал", v.text) for v in vs))
+
+    def test_company_feeds_in_aggregators(self):
+        """Хабр по company_ids и «Работа России» по ОГРН — для компаний, чьи сайты закрыты для серверов."""
+        calls = []
+
+        async def fake_get(session, url):
+            calls.append(url)
+            return "{}" if "trudvsem" in url else "<rss></rss>"
+
+        async def main():
+            with mock.patch.object(sources, "_get", fake_get):
+                await sources.fetch_habr(None, {"queries": ["devops"], "company_ids": [42]})
+                await sources.fetch_trudvsem(None, {"queries": [], "companies": ["1027700067328"]})
+        asyncio.run(main())
+        self.assertIn("https://career.habr.com/vacancies/rss?company_ids%5B%5D=42&type=all", calls)
+        self.assertIn("https://opendata.trudvsem.ru/api/v1/vacancies/company/1027700067328?limit=100", calls)
+        for name in ("company_ids", "companies"):
+            self.assertTrue(CFG.raw["sources"]["habr" if name == "company_ids" else "trudvsem"][name])
 
     def test_jobposting_location(self):
         page = ('<script type="application/ld+json">{"@type": "JobPosting", "description": "<p>Текст</p>", "jobLocation": '

@@ -78,9 +78,11 @@ def parse_habr(xml: str) -> list[Vacancy]:
 
 async def fetch_habr(session, src: dict) -> list[Vacancy]:
     found = {}
-    for q in src.get("queries", ["devops"]):
-        xml = await _get(session, f"https://career.habr.com/vacancies/rss?q={quote(q)}&type=all")
-        for v in parse_habr(xml):
+    urls = [f"https://career.habr.com/vacancies/rss?q={quote(q)}&type=all" for q in src.get("queries", ["devops"])]
+    # все вакансии отдельных компаний на Хабре — для тех, чьи собственные сайты закрыты для серверов
+    urls += [f"https://career.habr.com/vacancies/rss?company_ids%5B%5D={cid}&type=all" for cid in src.get("company_ids", [])]
+    for url in urls:
+        for v in parse_habr(await _get(session, url)):
             found.setdefault(v.ext_id, v)
     return list(found.values())
 
@@ -141,8 +143,11 @@ def parse_trudvsem(data: dict) -> list[Vacancy]:
 async def fetch_trudvsem(session, src: dict) -> list[Vacancy]:
     found = {}
     since = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for q in src.get("queries", ["devops"]):
-        url = f"https://opendata.trudvsem.ru/api/v1/vacancies?text={quote(q)}&limit=100&modifiedFrom={since}"
+    urls = [f"https://opendata.trudvsem.ru/api/v1/vacancies?text={quote(q)}&limit=100&modifiedFrom={since}"
+            for q in src.get("queries", ["devops"])]
+    # все вакансии конкретных компаний по ОГРН — IT среди них отбирает фильтр
+    urls += [f"https://opendata.trudvsem.ru/api/v1/vacancies/company/{ogrn}?limit=100" for ogrn in src.get("companies", [])]
+    for url in urls:
         for v in parse_trudvsem(json.loads(await _get(session, url))):
             found.setdefault(v.ext_id, v)
     return list(found.values())
