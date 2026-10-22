@@ -3,34 +3,18 @@
 Каждый источник — асинхронная функция fetch(session, cfg) -> list[Vacancy]; разбор вынесен в parse_*()
 и тестируется на сохранённых ответах (tests/fixtures).
 """
-import html
 import json
 import re
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-import aiohttp
 from bs4 import BeautifulSoup
 
 from .models import Vacancy
+from .net import TIMEOUT, UA, _clean, _get  # noqa: F401  (UA и TIMEOUT — часть интерфейса модуля)
 
-UA = "job-watch/1.0 (personal job alerts; +https://github.com/RealPycuk/job-watch)"
-TIMEOUT = aiohttp.ClientTimeout(total=30)
 SPB_REGION = "7800000000000"
-
-
-async def _get(session: aiohttp.ClientSession, url: str) -> str:
-    async with session.get(url, headers={"User-Agent": UA}, timeout=TIMEOUT) as r:
-        r.raise_for_status()
-        return await r.text()
-
-
-def _clean(s: str) -> str:
-    s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s or "", flags=re.S)
-    s = re.sub(r"<br\s*/?>", "\n", s)
-    s = html.unescape(re.sub(r"<[^>]+>", " ", s))
-    return re.sub(r"[ \t ]+", " ", s).strip()
 
 
 def _rss_items(xml: str) -> list[dict]:
@@ -250,6 +234,10 @@ def jobposting_location(page: str) -> tuple[str, bool | None]:
 
 # источники, где город и формат есть только на странице вакансии — дополняются для вакансий, прошедших фильтр
 ENRICH = {"avito"}
+
+
+def needs_enrich(v: Vacancy) -> bool:
+    return v.source in ENRICH or v.source.startswith("site:")
 
 
 async def enrich(session, v: Vacancy) -> Vacancy:

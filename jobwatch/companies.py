@@ -6,14 +6,16 @@
 import json
 import re
 from datetime import datetime
-from urllib.parse import quote
+import logging
+from urllib.parse import quote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
 from .models import Vacancy
-from .sources import _clean, _get
+from .net import _clean, _get, ru_ssl
 
 MAX_PAGES = 10
+log = logging.getLogger("job-watch")
 
 
 def _iso(s: str | None) -> float:
@@ -229,7 +231,45 @@ async def fetch_x5(session, src: dict) -> list[Vacancy]:
     return parse_x5(await _get(session, "https://x5.tech/vacancy"))
 
 
+# ───────────── универсальный источник: список вакансий на сайте компании, описанный в config.toml ─────────────
+
+CARD_EXP_RX = re.compile(r"(?:более|от)\s+(\d+)\s*(?:до\s+\d+\s*)?(?:лет|года?)", re.I)
+
+
+def parse_site(page: str, *, company: str, base_url: str, link: str) -> list[Vacancy]:
+    """Ссылки, подходящие под регулярку link; название — первая строка текста ссылки, остальное — в описание.
+    Если на одну вакансию ведёт несколько ссылок (картинка, «Подробнее»), берётся ссылка с самым длинным текстом."""
+    soup = BeautifulSoup(page, "html.parser")
+    rx = re.compile(link)
+    best: dict[str, list[str]] = {}
+    for a in soup.select("a[href]"):
+        url = urljoin(base_url, a["href"]).split("#")[0].split("?")[0]
+        strings = [s for s in a.stripped_strings if s not in ("Подробнее", "Откликнуться")]
+        if rx.search(url) and strings and len(" ".join(strings)) > len(" ".join(best.get(url, []))):
+            best[url] = strings
+    slug = re.sub(r"\W+", "-", urlparse(base_url).netloc.removeprefix("www.")).strip("-")
+    out = []
+    for url, strings in best.items():
+        card = " · ".join(strings)
+        m = CARD_EXP_RX.search(card)
+        out.append(Vacancy(source=f"site:{slug}", ext_id=url.rstrip("/").rsplit("/", 1)[-1] or url, title=strings[0][:150],
+                           url=url, text=card, company=company, experience_years=int(m.group(1)) if m else None))
+    return out
+
+
+async def fetch_sites(session, src: dict) -> list[Vacancy]:
+    out = []
+    for site in src.get("list", []):
+        try:
+            page = await _get(session, site["url"], ru_ssl() if site.get("russian_ca") else None)
+            out += parse_site(page, company=site["company"], base_url=site["url"], link=site["link"])
+        except Exception as e:                    # один упавший сайт не должен ронять остальные
+            log.warning("site %s failed: %s", site.get("company"), e)
+    return out
+
+
 SOURCES = {"yandex": fetch_yandex, "vk": fetch_vk, "sber": fetch_sber, "mts": fetch_mts,
-           "kaspersky": fetch_kaspersky, "avito": fetch_avito, "selectel": fetch_selectel, "x5": fetch_x5}
+           "kaspersky": fetch_kaspersky, "avito": fetch_avito, "selectel": fetch_selectel, "x5": fetch_x5,
+           "sites": fetch_sites}
 TITLES = {"yandex": "Яндекс", "vk": "VK", "sber": "Сбер", "mts": "МТС", "kaspersky": "Лаборатория Касперского",
-          "avito": "Авито", "selectel": "Selectel", "x5": "X5 Tech"}
+          "avito": "Авито", "selectel": "Selectel", "x5": "X5 Tech", "sites": "Сайт компании", "site": "Сайт компании"}
