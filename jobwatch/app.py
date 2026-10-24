@@ -40,6 +40,10 @@ KEY_HELP = ("🔑 Пришли <b>Authorization Key</b> от GigaChat API — и
             "Как получить: developers.sber.ru/studio → войти через Сбер ID → создать проект «GigaChat API» "
             "(физлицо) → «Настройки API» → «Получить ключ». Ключ показывается один раз.\n\n"
             "Сообщение с ключом я сразу удалю из чата.")
+VACANCY_HELP = ("✍️ Вставь текст вакансии одним сообщением — название, требования, обязанности. "
+                "Напишу сопроводительное по нему и твоему резюме.\n\n"
+                "Ссылку не открываю: скопируй описание со страницы (hh.ru, сайт компании, пост в канале).")
+VACANCY_MIN, VACANCY_MAX = 150, 8000
 RESUME_HELP = "📎 Пришли резюме файлом (PDF, DOCX, TXT) или вставь текстом одним сообщением."
 
 
@@ -236,10 +240,17 @@ class App:
         v = self.store.to_vacancy(row)
         text = await sources.full_text(self.http, v)
         matched, missing = json.loads(row["matched"] or "[]"), json.loads(row["missing"] or "[]")
+        return await self.compose(u, {"title": v.title, "company": v.company}, text, matched, missing)
+
+    async def letter_from_text(self, u, text: str) -> tuple[str, str]:
+        """Письмо по тексту вакансии, который пользователь прислал сам (/letter)."""
+        matched, missing = analyze.skills(self.cfg, self.profile_of(u).skills, text)
+        return await self.compose(u, {"title": letter.title_guess(text), "company": ""}, text, matched, missing)
+
+    async def compose(self, u, vac: dict, text: str, matched: list[str], missing: list[str]) -> tuple[str, str]:
         repos = letter.pick_repos(self.cfg.repos, matched) if self.is_owner(u["tg_id"]) else []
         p = self.profile_of(u)
         facts = "\n\n".join(x for x in (p.summary, u["resume"] or "", f"Подпись: {p.signature}" if p.signature else "") if x)
-        vac = {"title": v.title, "company": v.company}
         giga = self.giga_for(u)
         if giga and facts:
             try:
@@ -478,6 +489,38 @@ def build_router(app: App) -> Router:
             await app.store.kv_set(f"await_cv:{m.from_user.id}", "1")
             await m.answer(RESUME_HELP)
 
+    @r.message(Command("letter"))
+    async def letter_cmd(m: Message):
+        if (u := await access(m)) and u["step"] == "active":
+            await app.store.kv_set(f"await_vac:{m.from_user.id}", "1")
+            await m.answer(VACANCY_HELP)
+
+    async def send_letter(m: Message, u, text: str):
+        uid = u["tg_id"]
+        if app.lock(uid).locked():
+            await m.answer("Уже пишу письмо, подожди")
+            return
+        note = await m.answer("✍️ Пишу письмо…")
+        async with app.lock(uid):
+            out, how = await app.letter_from_text(u, text)
+        try:
+            await note.delete()
+        except Exception:
+            pass
+        await m.answer(f"{e(out)}\n\n<i>— {e(how)}</i>", link_preview_options=NO_PREVIEW,
+                       reply_markup=kb([[("🔁 Другой вариант", "lt:again")]]))
+
+    @r.callback_query(F.data == "lt:again")
+    async def letter_again(c: CallbackQuery):
+        if not (u := await access(c)):
+            return
+        text = await app.store.kv_get(f"vac_text:{c.from_user.id}")
+        if not text:
+            await c.answer("Текст вакансии не сохранился — пришли его ещё раз через /letter", show_alert=True)
+            return
+        await c.answer()
+        await send_letter(c.message, u, text)
+
     @r.message(Command("key"))
     async def key_cmd(m: Message):
         if await access(m):
@@ -675,6 +718,18 @@ def build_router(app: App) -> Router:
             return
         if u["step"] != "active":
             await next_step(uid)
+            return
+        # текст вакансии: после /letter или просто длинное сообщение
+        waiting = await app.store.kv_get(f"await_vac:{uid}") == "1"
+        if waiting or len(t) >= 300:
+            if len(t) < VACANCY_MIN:
+                await m.answer("Это слишком коротко для вакансии. " + VACANCY_HELP)
+                return
+            await app.store.kv_set(f"await_vac:{uid}", "0")
+            await app.store.kv_set(f"vac_text:{uid}", t[:VACANCY_MAX])
+            await send_letter(m, u, t[:VACANCY_MAX])
+            return
+        await m.answer("Чтобы написать сопроводительное, отправь /letter и затем текст вакансии.")
 
     return r
 
@@ -691,8 +746,8 @@ async def main():
     dp = Dispatcher()
     dp.include_router(build_router(app))
     await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in (
-        ("profile", "профиль и фильтры"), ("saved", "сохранённые"), ("status", "статистика"),
-        ("pause", "пауза"), ("continue", "продолжить"), ("cv", "новое резюме"), ("key", "сменить ключ GigaChat"),
+        ("letter", "письмо по тексту вакансии"), ("profile", "профиль и фильтры"), ("saved", "сохранённые"),
+        ("status", "статистика"), ("pause", "пауза"), ("continue", "продолжить"), ("cv", "новое резюме"), ("key", "сменить ключ GigaChat"),
         ("delete", "удалить мои данные"))])
     enabled = [n for n in sources.SOURCES if cfg.source(n).get("enabled")]
     log.info("job-watch started: sources=%s, owner=%s, users=%s", ",".join(enabled), env.owner_id,

@@ -49,10 +49,13 @@ class FakeSession(BaseSession):
 
 
 class FakeGiga:
+    prompts = []
+
     async def token(self):
         return "tok"
 
     async def chat(self, system, user):
+        FakeGiga.prompts.append(user)
         return PROFILE_JSON if "JSON" in system else "Здравствуйте! Письмо."
 
 
@@ -116,10 +119,26 @@ class Flow(unittest.TestCase):
                         after_done = (await h.store.user(FRIEND))["step"]
                         cards = [t for t in texts() if "💼" in t]
 
+                        # письмо по вставленному тексту вакансии
+                        vacancy = ("Junior QA Engineer\nООО Ромашка ищет тестировщика. Требования: Python, pytest, SQL, "
+                                   "понимание клиент-серверной архитектуры. Обязанности: ручное и автоматизированное тестирование.")
+                        await msg("/letter")
+                        await msg("короткий текст")
+                        too_short = texts()[-1]
+                        await msg(vacancy)
+                        letter_msg = texts()[-1]
+                        letter_prompt = FakeGiga.prompts[-1]
+                        await click("lt:again")
+                        again = texts()[-1]
+                        await msg("просто фраза")
+                        hint = texts()[-1]
+
                     others = [c.text for c in session.calls if isinstance(c, SendMessage) and c.chat_id == OWNER]
                     return dict(denied=denied, after_invite=after_invite, after_consent=after_consent, key_deleted=key_deleted,
                                 stored_key=stored_key, after_key=after_key, after_resume=after_resume, city=city,
-                                before_done=before_done, after_done=after_done, cards=cards, owner_msgs=others)
+                                before_done=before_done, after_done=after_done, cards=cards, owner_msgs=others,
+                                too_short=too_short, letter_msg=letter_msg, letter_prompt=letter_prompt, again=again, hint=hint,
+                                vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"))
 
         r = asyncio.run(main())
         self.assertIn(f"Твой ID: <code>{FRIEND}</code>", r["denied"])
@@ -135,6 +154,15 @@ class Flow(unittest.TestCase):
         self.assertEqual(len(r["cards"]), 1)                      # после — backfill подходящей
         self.assertIn("Junior QA Engineer", r["cards"][0])
         self.assertTrue(any("По приглашению зашёл" in t for t in r["owner_msgs"]))
+        self.assertIn("слишком коротко", r["too_short"])
+        self.assertIn("Здравствуйте! Письмо.", r["letter_msg"])
+        self.assertIn("ВАКАНСИЯ: Junior QA Engineer", r["letter_prompt"])
+        self.assertIn("pytest", r["letter_prompt"])
+        self.assertIn("Тестирую.", r["letter_prompt"])                    # факты из резюме пользователя
+        self.assertIn("Совпадающие навыки: Python", r["letter_prompt"])
+        self.assertIn("Здравствуйте! Письмо.", r["again"])
+        self.assertIn("/letter", r["hint"])
+        self.assertIn("Ромашка", r["vac_text"])
 
 
 if __name__ == "__main__":

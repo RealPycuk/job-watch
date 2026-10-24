@@ -214,11 +214,14 @@ class StoreTest(unittest.TestCase):
                 async with Harness(d) as h:
                     await h.add_friend(title="DevOps", roles=["devops"], city="Москва")
                     await h.cycle([v(1)])
+                    await h.store.kv_set(f"vac_text:{FRIEND}", "вакансия")
+                    await h.store.kv_set(f"vac_text:1{FRIEND}", "чужая")
                     await h.store.delete_user(FRIEND)
                     left = await (await h.store.db.execute("select count(*) from deliveries where user_id=?",
                                                            (FRIEND,))).fetchone()
-                    return await h.store.user(FRIEND), left[0]
-        self.assertEqual(run(main()), (None, 0))
+                    return (await h.store.user(FRIEND), left[0], await h.store.kv_get(f"vac_text:{FRIEND}"),
+                            await h.store.kv_get(f"vac_text:1{FRIEND}"))
+        self.assertEqual(run(main()), (None, 0, "", "чужая"))
 
 
 class VaultTest(unittest.TestCase):
@@ -316,6 +319,14 @@ class GigaChatClient(unittest.TestCase):
 
 
 class Template(unittest.TestCase):
+    def test_title_guess_and_untitled_template(self):
+        self.assertEqual(letter.title_guess("\n  DevOps-инженер (junior)\nТребования: Docker"), "DevOps-инженер (junior)")
+        self.assertEqual(letter.title_guess("https://hh.ru/vacancy/1\nтекст"), "")
+        self.assertEqual(letter.title_guess("Мы ищем " + "очень " * 30 + "хорошего инженера"), "")
+        text = letter.template("", "", {"title": "", "company": ""}, ["Docker"], [], [])
+        self.assertTrue(text.startswith("Здравствуйте! Откликаюсь на вашу вакансию."))
+        self.assertIn("название и компанию определи", letter.build_prompt("факты", {"title": "", "company": ""}, "т", [], [], []))
+
     def test_template_and_repos(self):
         repos = letter.pick_repos({"CI/CD": "r1", "Docker": "r1", "Prometheus": "r2", "Ansible": "r3"},
                                   ["Docker", "CI/CD", "Prometheus", "Ansible"])

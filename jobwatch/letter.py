@@ -68,8 +68,9 @@ def pick_repos(repos: dict[str, str], matched: list[str]) -> list[str]:
 
 
 def build_prompt(profile: str, vac: dict, vacancy_text: str, matched: list[str], missing: list[str], repos: list[str]) -> str:
+    title = vac["title"] or "название и компанию определи по тексту вакансии"
     return (f"ПРОФИЛЬ КАНДИДАТА:\n{profile.strip()}\n\n"
-            f"ВАКАНСИЯ: {vac['title']}" + (f" — {vac['company']}" if vac["company"] else "") + "\n"
+            f"ВАКАНСИЯ: {title}" + (f" — {vac['company']}" if vac["company"] else "") + "\n"
             f"Текст вакансии:\n{vacancy_text[:5000]}\n\n"
             f"Совпадающие навыки: {', '.join(matched) or 'не определены'}\n"
             f"Навыки из вакансии, которых нет в профиле: {', '.join(missing) or 'нет'}\n"
@@ -84,7 +85,8 @@ def clean(text: str) -> str:
 def template(summary: str, sign: str, vac: dict, matched: list[str], missing: list[str], repos: list[str]) -> str:
     """Запасной вариант без нейросети: «о себе» и подпись берутся из профиля."""
     company = f" в {vac['company']}" if vac["company"] else ""
-    parts = [f"Здравствуйте! Откликаюсь на вакансию «{vac['title']}»{company}."]
+    title = f"вакансию «{vac['title']}»" if vac["title"] else "вашу вакансию"
+    parts = [f"Здравствуйте! Откликаюсь на {title}{company}."]
     if summary:
         parts.append(summary)
     if matched:
@@ -95,6 +97,15 @@ def template(summary: str, sign: str, vac: dict, matched: list[str], missing: li
         parts.append("Код можно посмотреть здесь: " + ", ".join(repos) + ".")
     parts.append("Готов выполнить тестовое задание.")
     return " ".join(parts) + (f"\n\n{sign}" if sign else "")
+
+
+def title_guess(text: str) -> str:
+    """Название вакансии из вставленного текста: первая короткая непустая строка, иначе пусто."""
+    for line in text.splitlines():
+        line = line.strip(" \t•-—:")
+        if line:
+            return line if len(line) <= 100 and not line.startswith("http") else ""
+    return ""
 
 
 def field(profile: str, name: str) -> str:

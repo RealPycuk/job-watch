@@ -177,6 +177,8 @@ class Store:
     async def delete_user(self, tg_id: int):
         await self.db.execute("delete from deliveries where user_id=?", (tg_id,))
         await self.db.execute("delete from users where tg_id=?", (tg_id,))
+        # состояния и текст вставленной вакансии: ключи вида «имя:<tg_id>»
+        await self.db.execute("delete from kv where substr(k, instr(k, ':') + 1) = ?", (str(tg_id),))
         await self.db.commit()
 
     async def create_invite(self, created_by: int, days: int = 7) -> str:
