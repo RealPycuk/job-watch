@@ -4,6 +4,7 @@ Telegram подменён фейковой сессией (запросы бот
 """
 import asyncio
 import datetime
+import io
 import json
 import tempfile
 import time
@@ -13,7 +14,7 @@ from unittest import mock
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import AnswerCallbackQuery, DeleteMessage, EditMessageText, GetMe, SendMessage
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, Document, Message, Update, User
 
 from jobwatch import app as A
 from test_app import OWNER, Harness, v
@@ -158,6 +159,21 @@ class Flow(unittest.TestCase):
                         await click("p:undo")
                         restored = (await h.store.user(FRIEND))["profile"] == profile_before
 
+                        # вакансия файлом: письмо, профиль не меняется
+                        async def send_file(name, data):
+                            doc = Document(file_id="f", file_unique_id="u", file_name=name, file_size=len(data))
+                            m = Message(message_id=next(n), date=datetime.datetime.now(), chat=chat, from_user=user, document=doc)
+                            with mock.patch.object(bot, "download", mock.AsyncMock(return_value=io.BytesIO(data))):
+                                await dp.feed_update(bot, Update(update_id=next(n), message=m))
+
+                        vac_file = "SRE-инженер\nТребования: Grafana, Loki, " + "дежурства и разбор инцидентов. " * 10
+                        await send_file("vacancy.txt", vac_file.encode())
+                        file_prompt = FakeGiga.prompts[-1]
+                        file_letter = texts()[-1]
+                        file_profile_kept = (await h.store.user(FRIEND))["profile"] == profile_before
+                        await send_file("photo.jpg", b"x" * 300)
+                        bad_file = texts()[-1]
+
                     others = [c.text for c in session.calls if isinstance(c, SendMessage) and c.chat_id == OWNER]
                     return dict(denied=denied, after_invite=after_invite, after_consent=after_consent, key_deleted=key_deleted,
                                 stored_key=stored_key, after_key=after_key, after_resume=after_resume, city=city,
@@ -165,7 +181,8 @@ class Flow(unittest.TestCase):
                                 too_short=too_short, letter_msg=letter_msg, letter_prompt=letter_prompt, again=again, hint=hint,
                                 vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"),
                                 two_parts=two_parts, letters_two=letters_two, profile_kept=profile_kept,
-                                replaced=replaced, restored=restored)
+                                replaced=replaced, restored=restored, file_prompt=file_prompt, file_letter=file_letter,
+                                file_profile_kept=file_profile_kept, bad_file=bad_file)
 
         r = asyncio.run(main())
         self.assertIn(f"Твой ID: <code>{FRIEND}</code>", r["denied"])
@@ -189,13 +206,18 @@ class Flow(unittest.TestCase):
         self.assertIn("Совпадающие навыки: Python", r["letter_prompt"])
         self.assertIn("Здравствуйте! Письмо.", r["again"])
         self.assertIn("/letter", r["hint"])
-        self.assertIn("Системный администратор", r["vac_text"])          # последняя вставленная вакансия
+        self.assertIn("SRE-инженер", r["vac_text"])                      # последняя присланная вакансия (файлом)
         self.assertEqual(r["letters_two"], 1)
         self.assertIn("Kubernetes", r["two_parts"])
         self.assertIn("Terraform", r["two_parts"])
         self.assertTrue(r["profile_kept"])
         self.assertTrue(r["replaced"])
         self.assertTrue(r["restored"])
+        self.assertIn("ВАКАНСИЯ: SRE-инженер", r["file_prompt"])
+        self.assertIn("Loki", r["file_prompt"])
+        self.assertIn("Здравствуйте! Письмо.", r["file_letter"])
+        self.assertTrue(r["file_profile_kept"])
+        self.assertIn("Нужен PDF, DOCX или TXT", r["bad_file"])
 
 
 if __name__ == "__main__":

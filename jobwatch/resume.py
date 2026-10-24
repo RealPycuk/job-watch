@@ -39,7 +39,7 @@ def extract_text(filename: str, data: bytes) -> str:
         raise ResumeError("Нужен PDF, DOCX или TXT")
     text = re.sub(r"[ \t ]+", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
     if len(text) < 200:
-        raise ResumeError("В файле почти нет текста — если это скан, пришли резюме текстом или в DOCX")
+        raise ResumeError("В файле почти нет текста — если это скан, пришли текстом или в DOCX")
     return text[:MAX_TEXT]
 
 

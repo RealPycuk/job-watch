@@ -40,8 +40,8 @@ KEY_HELP = ("🔑 Пришли <b>Authorization Key</b> от GigaChat API — и
             "Как получить: developers.sber.ru/studio → войти через Сбер ID → создать проект «GigaChat API» "
             "(физлицо) → «Настройки API» → «Получить ключ». Ключ показывается один раз.\n\n"
             "Сообщение с ключом я сразу удалю из чата.")
-VACANCY_HELP = ("✍️ Вставь текст вакансии одним сообщением — название, требования, обязанности. "
-                "Напишу сопроводительное по нему и твоему резюме.\n\n"
+VACANCY_HELP = ("✍️ Вставь текст вакансии — название, требования, обязанности (можно несколькими сообщениями подряд) "
+                "или пришли файлом PDF, DOCX, TXT. Напишу сопроводительное по нему и твоему резюме.\n\n"
                 "Ссылку не открываю: скопируй описание со страницы (hh.ru, сайт компании, пост в канале).")
 VACANCY_MIN, VACANCY_MAX = 150, 8000
 MODE_TTL = 15 * 60          # «жду резюме / вакансию» после /cv и /letter действует 15 минут
@@ -689,16 +689,28 @@ def build_router(app: App) -> Router:
         if not (u := await access(m)):
             return
         uid = m.from_user.id
-        if u["step"] != "resume" and not await app.in_mode(uid, "cv"):
-            await m.answer("Чтобы обновить резюме, отправь /cv и затем файл.")
+        as_resume = u["step"] == "resume" or await app.in_mode(uid, "cv")
+        if not as_resume and u["step"] != "active":
+            await next_step(uid)
             return
         if (m.document.file_size or 0) > resume.MAX_FILE:
             await m.answer("Файл больше 5 МБ.")
             return
         await app.set_mode(uid, "")
         buf = await app.bot.download(m.document)
-        async with app.lock(uid):
-            await app.process_resume(uid, m.document.file_name or "resume", buf.read(), None)
+        name = m.document.file_name or "file"
+        if as_resume:
+            async with app.lock(uid):
+                await app.process_resume(uid, name, buf.read(), None)
+            return
+        # вне режима /cv файл — это текст вакансии (резюме меняется только через /cv)
+        try:
+            t = resume.extract_text(name, buf.read())[:VACANCY_MAX]
+        except resume.ResumeError as ex:
+            await m.answer(f"⚠️ {e(str(ex))}\n\n{VACANCY_HELP}\n\nЧтобы обновить резюме, отправь /cv и затем файл.")
+            return
+        await app.store.kv_set(f"vac_text:{uid}", t)
+        await send_letter(m, u, t)
 
     async def gather(m: Message, u, kind: str, t: str):
         """Части одного длинного текста приходят отдельными сообщениями подряд — собираем их и обрабатываем вместе."""
