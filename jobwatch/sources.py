@@ -3,6 +3,7 @@
 Каждый источник — асинхронная функция fetch(session, cfg) -> list[Vacancy]; разбор вынесен в parse_*()
 и тестируется на сохранённых ответах (tests/fixtures).
 """
+import asyncio
 import json
 import re
 from email.utils import parsedate_to_datetime
@@ -192,8 +193,56 @@ async def fetch_telegram(session, src: dict) -> list[Vacancy]:
     return out
 
 
-SOURCES = {"habr": fetch_habr, "geekjob": fetch_geekjob, "trudvsem": fetch_trudvsem, "telegram": fetch_telegram}
-TITLES = {"habr": "Хабр Карьера", "geekjob": "Geekjob", "trudvsem": "Работа России", "telegram": "Telegram"}
+# ───────────── Young&Junior: вакансии и стажировки для начинающих (youngjunior.ru) ─────────────
+# Список — разметка schema.org ItemList на страницах категорий (новые сверху), подробности — JobPosting на странице
+# вакансии; их бот дочитывает только для вакансий, прошедших фильтр по названию (ENRICH). robots.txt закрывает
+# только /api/, /admin/ и /profile.
+
+YJ_BASE = "https://youngjunior.ru"
+
+
+def _ld_json(page: str) -> list[dict]:
+    out = []
+    for tag in BeautifulSoup(page, "html.parser").select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(tag.string or "")
+        except ValueError:
+            continue
+        out += [d for d in (data if isinstance(data, list) else [data]) if isinstance(d, dict)]
+    return out
+
+
+def parse_youngjunior(page: str) -> list[Vacancy]:
+    out = []
+    for d in _ld_json(page):
+        if d.get("@type") != "ItemList":
+            continue
+        for item in d.get("itemListElement") or []:
+            url, title = item.get("url") or "", (item.get("name") or "").strip()
+            m = re.fullmatch(r"https://youngjunior\.ru/[\w-]+/(?:jobs|internships)/(\d+)", url)
+            if m and title:
+                out.append(Vacancy(source="youngjunior", ext_id=m.group(1), title=title, url=url))
+    return out
+
+
+async def fetch_youngjunior(session, src: dict) -> list[Vacancy]:
+    found: dict[str, Vacancy] = {}
+    for cat in src.get("categories", ["devops"]):
+        for kind in src.get("kinds", ["jobs", "internships"]):
+            try:
+                vs = parse_youngjunior(await _get(session, f"{YJ_BASE}/{cat}/{kind}"))
+            except Exception:
+                continue                                   # одна категория не должна ронять весь источник
+            for v in vs:                                    # одна вакансия бывает в нескольких категориях
+                found.setdefault(v.ext_id, v)
+            await asyncio.sleep(1)                          # вежливая пауза между страницами
+    return list(found.values())
+
+
+SOURCES = {"habr": fetch_habr, "geekjob": fetch_geekjob, "trudvsem": fetch_trudvsem, "telegram": fetch_telegram,
+           "youngjunior": fetch_youngjunior}
+TITLES = {"habr": "Хабр Карьера", "geekjob": "Geekjob", "trudvsem": "Работа России", "telegram": "Telegram",
+          "youngjunior": "Young&Junior"}
 
 
 # ───────────── полный текст вакансии для письма ─────────────
@@ -233,18 +282,34 @@ def jobposting_location(page: str) -> tuple[str, bool | None]:
 
 
 # источники, где город и формат есть только на странице вакансии — дополняются для вакансий, прошедших фильтр
-ENRICH = {"avito"}
+ENRICH = {"avito", "youngjunior"}
 
 
 def needs_enrich(v: Vacancy) -> bool:
     return v.source in ENRICH or v.source.startswith("site:")
 
 
+def jobposting_meta(page: str) -> tuple[str, float]:
+    """Компания (hiringOrganization) и дата публикации (datePosted) из JobPosting."""
+    for d in _ld_json(page):
+        if d.get("@type") == "JobPosting":
+            org = d.get("hiringOrganization") or {}
+            try:
+                ts = datetime.fromisoformat(str(d.get("datePosted") or "").replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                ts = 0.0
+            return str(org.get("name") or "").strip() if isinstance(org, dict) else "", ts
+    return "", 0.0
+
+
 async def enrich(session, v: Vacancy) -> Vacancy:
     page = await _get(session, v.url)
     city, remote = jobposting_location(page)
+    company, posted = jobposting_meta(page)
     v.city = v.city or city
     v.remote = v.remote if v.remote is not None else remote
+    v.company = v.company or company
+    v.published_at = v.published_at or posted
     v.text = (f"{v.text}\n{parse_jobposting(page)}").strip()
     return v
 

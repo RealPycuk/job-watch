@@ -51,6 +51,14 @@ channels = ["devops_jobs_feed", "fordevops", "DevOpsSRE_Jobs", "job_devops", "sy
             "jobforjunior", "juno_jobs", "geekjobs", "remotegeekjob", "it_vakansii_jobs",
             "ozon_tech", "alfabank_career"]       # официальные каналы Ozon Tech и карьеры Альфа-Банка
 
+[sources.youngjunior]          # youngjunior.ru — вакансии и стажировки для начинающих, Россия и СНГ
+enabled = true
+every_minutes = 60
+# категории сайта (youngjunior.ru/<категория>/jobs и /internships); новые вакансии — на первой странице
+categories = ["devops", "backend", "python", "go", "java", "javascript", "fullstack", "php", "csharp", "mobile",
+              "qa", "data", "analytics", "product", "product-engineer", "project", "design"]
+kinds = ["jobs", "internships"]
+
 # ───── карьерные сайты IT-компаний: обновляются реже, поэтому опрашиваются раз в 3 часа ─────
 # Сайты Ozon и ЭР-Телекома закрыты антибот-защитой (обходить не будем), Альфа-Банка, Т-Банка, Positive Technologies
 # и Контура не отвечают серверным IP — их вакансии берутся иначе: Хабр (company_ids), «Работа России» (companies),

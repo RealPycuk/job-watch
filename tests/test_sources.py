@@ -1,6 +1,8 @@
 """Разбор реальных ответов источников, сохранённых в tests/fixtures."""
+import asyncio
 import json
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from jobwatch import sources as S
@@ -64,6 +66,44 @@ class Telegram(unittest.TestCase):
         self.assertEqual(S.telegram_title("Обсуждение: @x\n#job #remote\nФормат: удалённо\nDevOps-инженер в финтех"),
                          "DevOps-инженер в финтех")
         self.assertEqual(S.telegram_title("Ищем людей в команду\nподробности ниже"), "Ищем людей в команду")
+
+
+class YoungJunior(unittest.TestCase):
+    def test_listing(self):
+        vs = S.parse_youngjunior((F / "youngjunior_devops.html").read_text(encoding="utf-8"))
+        self.assertEqual(len(vs), 20)
+        self.assertEqual(len({v.key for v in vs}), 20)
+        self.assertEqual((vs[0].ext_id, vs[0].title, vs[0].url),
+                         ("94652", "Системный инженер (SRE)", "https://youngjunior.ru/devops/jobs/94652"))
+        self.assertTrue(all(S.needs_enrich(v) for v in vs))
+
+    def test_enrich_from_jobposting(self):
+        page = (F / "youngjunior_vacancy.html").read_text(encoding="utf-8")
+        v = S.parse_youngjunior((F / "youngjunior_devops.html").read_text(encoding="utf-8"))[0]
+
+        async def fake_get(session, url, ssl_ctx=None):
+            return page
+        with mock.patch.object(S, "_get", fake_get):
+            v = asyncio.run(S.enrich(None, v))
+        self.assertEqual(v.company, "Т-Банк")
+        self.assertTrue(v.remote)
+        self.assertIn("Docker", v.text)
+        self.assertGreater(v.published_at, 0)
+
+    def test_fetch_dedupes_categories(self):
+        listing = (F / "youngjunior_devops.html").read_text(encoding="utf-8")
+        calls = []
+
+        async def fake_get(session, url, ssl_ctx=None):
+            calls.append(url)
+            if "/go/" in url:
+                raise RuntimeError("HTTP 500")
+            return listing
+        with mock.patch.object(S, "_get", fake_get), mock.patch("asyncio.sleep", mock.AsyncMock()):
+            vs = asyncio.run(S.fetch_youngjunior(None, {"categories": ["devops", "go", "data"], "kinds": ["jobs", "internships"]}))
+        self.assertEqual(len(calls), 6)
+        self.assertIn("https://youngjunior.ru/data/internships", calls)
+        self.assertEqual(len(vs), 20)                       # одна и та же вакансия в разных категориях — один раз
 
 
 if __name__ == "__main__":
