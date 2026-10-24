@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import json
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -73,9 +74,12 @@ class Flow(unittest.TestCase):
                     chat = Chat(id=FRIEND, type="private")
                     n = iter(range(1, 1000))
 
-                    async def msg(text):
+                    async def msg(text, settle=True):
                         m = Message(message_id=next(n), date=datetime.datetime.now(), chat=chat, from_user=user, text=text)
                         await dp.feed_update(bot, Update(update_id=next(n), message=m))
+                        if settle:                                   # дождаться склейки частей длинного текста
+                            while h.app.pending:
+                                await asyncio.gather(*(b["task"] for b in list(h.app.pending.values())), return_exceptions=True)
 
                     async def click(data):
                         m = Message(message_id=next(n), date=datetime.datetime.now(), chat=chat, from_user=bot_user, text="x")
@@ -98,7 +102,7 @@ class Flow(unittest.TestCase):
 
                     with mock.patch.object(A.App, "make_giga", lambda self, key: FakeGiga()), \
                             mock.patch.object(A.App, "giga_for", lambda self, u: FakeGiga()), \
-                            mock.patch("asyncio.sleep", mock.AsyncMock()):
+                            mock.patch("asyncio.sleep", mock.AsyncMock()), mock.patch.object(A, "PASTE_GAP", 0.05):
                         await msg("super-secret-gigachat-key")
                         u = await h.store.user(FRIEND)
                         key_deleted = any(isinstance(c, DeleteMessage) for c in session.calls)
@@ -133,12 +137,35 @@ class Flow(unittest.TestCase):
                         await msg("просто фраза")
                         hint = texts()[-1]
 
+                        # вакансия двумя сообщениями (Telegram режет длинный текст) — одно письмо по обеим частям
+                        letters_before = len([t for t in texts() if "Письмо." in t])
+                        await msg("/letter")
+                        await msg("DevOps Engineer\nТребования: Docker, Kubernetes, " + "опыт эксплуатации Linux. " * 10, settle=False)
+                        await msg("Продолжение: Ansible, Terraform, мониторинг Prometheus.")
+                        two_parts = FakeGiga.prompts[-1]
+                        letters_two = len([t for t in texts() if "Письмо." in t]) - letters_before
+
+                        # старый режим «жду резюме» истёк — длинный текст идёт в письмо, а не в профиль
+                        profile_before = (await h.store.user(FRIEND))["profile"]
+                        await h.store.kv_set(f"await_cv:{FRIEND}", str(time.time() - 3600))
+                        await msg("Системный администратор\n" + "Требования: Linux, сети, Nginx. " * 15)
+                        profile_kept = (await h.store.user(FRIEND))["profile"] == profile_before
+
+                        # резюме по ошибке — вернуть прежний профиль
+                        await msg("/cv")
+                        await msg("Совсем другое резюме. " * 30)
+                        replaced = (await h.store.user(FRIEND))["profile"] != profile_before
+                        await click("p:undo")
+                        restored = (await h.store.user(FRIEND))["profile"] == profile_before
+
                     others = [c.text for c in session.calls if isinstance(c, SendMessage) and c.chat_id == OWNER]
                     return dict(denied=denied, after_invite=after_invite, after_consent=after_consent, key_deleted=key_deleted,
                                 stored_key=stored_key, after_key=after_key, after_resume=after_resume, city=city,
                                 before_done=before_done, after_done=after_done, cards=cards, owner_msgs=others,
                                 too_short=too_short, letter_msg=letter_msg, letter_prompt=letter_prompt, again=again, hint=hint,
-                                vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"))
+                                vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"),
+                                two_parts=two_parts, letters_two=letters_two, profile_kept=profile_kept,
+                                replaced=replaced, restored=restored)
 
         r = asyncio.run(main())
         self.assertIn(f"Твой ID: <code>{FRIEND}</code>", r["denied"])
@@ -162,7 +189,13 @@ class Flow(unittest.TestCase):
         self.assertIn("Совпадающие навыки: Python", r["letter_prompt"])
         self.assertIn("Здравствуйте! Письмо.", r["again"])
         self.assertIn("/letter", r["hint"])
-        self.assertIn("Ромашка", r["vac_text"])
+        self.assertIn("Системный администратор", r["vac_text"])          # последняя вставленная вакансия
+        self.assertEqual(r["letters_two"], 1)
+        self.assertIn("Kubernetes", r["two_parts"])
+        self.assertIn("Terraform", r["two_parts"])
+        self.assertTrue(r["profile_kept"])
+        self.assertTrue(r["replaced"])
+        self.assertTrue(r["restored"])
 
 
 if __name__ == "__main__":

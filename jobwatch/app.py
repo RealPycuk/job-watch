@@ -44,6 +44,9 @@ VACANCY_HELP = ("✍️ Вставь текст вакансии одним со
                 "Напишу сопроводительное по нему и твоему резюме.\n\n"
                 "Ссылку не открываю: скопируй описание со страницы (hh.ru, сайт компании, пост в канале).")
 VACANCY_MIN, VACANCY_MAX = 150, 8000
+MODE_TTL = 15 * 60          # «жду резюме / вакансию» после /cv и /letter действует 15 минут
+PASTE_GAP = 4.0             # длинный текст Telegram режет на части по 4096 — ждём остальные столько секунд
+_sleep = asyncio.sleep
 RESUME_HELP = "📎 Пришли резюме файлом (PDF, DOCX, TXT) или вставь текстом одним сообщением."
 
 
@@ -58,6 +61,7 @@ class App:
         self.cycle_lock = asyncio.Lock()
         self.user_locks: dict[int, asyncio.Lock] = {}
         self._giga: dict[int, tuple[str, letter.GigaChat]] = {}
+        self.pending: dict[int, dict] = {}         # недособранный длинный текст по пользователям
 
     def lock(self, uid: int) -> asyncio.Lock:
         return self.user_locks.setdefault(uid, asyncio.Lock())
@@ -79,6 +83,17 @@ class App:
             cached = (digest, self.make_giga(key))
             self._giga[u["tg_id"]] = cached
         return cached[1]
+
+    async def set_mode(self, uid: int, mode: str):
+        """Один режим ожидания ввода за раз: cv — резюме, vac — текст вакансии, '' — ничего."""
+        await self.store.kv_set(f"await_cv:{uid}", str(time.time()) if mode == "cv" else "0")
+        await self.store.kv_set(f"await_vac:{uid}", str(time.time()) if mode == "vac" else "0")
+
+    async def in_mode(self, uid: int, mode: str) -> bool:
+        try:
+            return time.time() - float(await self.store.kv_get(f"await_{mode}:{uid}", "0")) < MODE_TTL
+        except ValueError:
+            return False
 
     @staticmethod
     def profile_of(u) -> Profile:
@@ -313,8 +328,13 @@ class App:
             log.warning("resume parse failed for %s: %s", uid, ex)
             await self.say(uid, f"⚠️ GigaChat не ответил: <code>{e(str(ex)[:150])}</code>. Попробуй ещё раз чуть позже.")
             return
+        if u["step"] == "active":
+            await self.store.kv_set(f"prev_profile:{uid}", json.dumps({"profile": u["profile"], "resume": u["resume"]}, ensure_ascii=False))
         await self.store.update_user(uid, profile=p.to_dict(), resume=body, step="review" if u["step"] != "active" else "active")
         await self.show_profile(uid, final=u["step"] != "active", note="" if u["step"] != "active" else "Профиль обновлён:")
+        if u["step"] == "active":
+            await self.say(uid, "Если это было не резюме — можно вернуть прежний профиль.",
+                           reply_markup=kb([[("↩️ Вернуть прежний профиль", "p:undo")]]))
 
 
 def build_router(app: App) -> Router:
@@ -486,13 +506,13 @@ def build_router(app: App) -> Router:
     async def cv(m: Message):
         if (u := await access(m)) and u["step"] in ("active", "review"):
             await app.store.update_user(m.from_user.id, step="resume" if u["step"] != "active" else "active")
-            await app.store.kv_set(f"await_cv:{m.from_user.id}", "1")
+            await app.set_mode(m.from_user.id, "cv")
             await m.answer(RESUME_HELP)
 
     @r.message(Command("letter"))
     async def letter_cmd(m: Message):
         if (u := await access(m)) and u["step"] == "active":
-            await app.store.kv_set(f"await_vac:{m.from_user.id}", "1")
+            await app.set_mode(m.from_user.id, "vac")
             await m.answer(VACANCY_HELP)
 
     async def send_letter(m: Message, u, text: str):
@@ -563,8 +583,18 @@ def build_router(app: App) -> Router:
         elif action == "fmt":
             await fmt_menu(uid, c.message)
         elif action == "cv":
-            await app.store.kv_set(f"await_cv:{uid}", "1")
+            await app.set_mode(uid, "cv")
             await app.say(uid, RESUME_HELP)
+        elif action == "undo":
+            prev = await app.store.kv_get(f"prev_profile:{uid}")
+            if not prev:
+                await c.answer("Прежнего профиля нет", show_alert=True)
+                return
+            prev = json.loads(prev)
+            await app.store.update_user(uid, profile=json.loads(prev["profile"] or "{}"), resume=prev["resume"] or "")
+            await app.store.kv_set(f"prev_profile:{uid}", "")
+            await c.message.delete()
+            await app.show_profile(uid, note="↩️ Вернул прежний профиль:")
         elif action == "done" and u["step"] == "review":
             await app.store.update_user(uid, step="active", activated_at=time.time())
             await app.say(uid, "✅ Готово! Новые вакансии буду присылать по мере появления. Сначала — подходящие за последние 3 дня:")
@@ -659,16 +689,54 @@ def build_router(app: App) -> Router:
         if not (u := await access(m)):
             return
         uid = m.from_user.id
-        if u["step"] != "resume" and await app.store.kv_get(f"await_cv:{uid}") != "1":
+        if u["step"] != "resume" and not await app.in_mode(uid, "cv"):
             await m.answer("Чтобы обновить резюме, отправь /cv и затем файл.")
             return
         if (m.document.file_size or 0) > resume.MAX_FILE:
             await m.answer("Файл больше 5 МБ.")
             return
-        await app.store.kv_set(f"await_cv:{uid}", "0")
+        await app.set_mode(uid, "")
         buf = await app.bot.download(m.document)
         async with app.lock(uid):
             await app.process_resume(uid, m.document.file_name or "resume", buf.read(), None)
+
+    async def gather(m: Message, u, kind: str, t: str):
+        """Части одного длинного текста приходят отдельными сообщениями подряд — собираем их и обрабатываем вместе."""
+        uid = u["tg_id"]
+        b = app.pending.get(uid)
+        if b and b["kind"] == kind:
+            b["parts"].append(t)
+            b["task"].cancel()
+        else:
+            b = app.pending[uid] = {"kind": kind, "parts": [t]}
+        b["m"] = m
+        b["task"] = asyncio.create_task(flush(uid, b))
+
+    async def flush(uid: int, b: dict):
+        await _sleep(PASTE_GAP)
+        if app.pending.get(uid) is b:
+            del app.pending[uid]
+        t, m = "\n".join(b["parts"]), b["m"]
+        u = await app.store.user(uid)
+        if not u:
+            return
+        try:
+            if b["kind"] == "cv":
+                if len(t) < 300:
+                    await m.answer("Слишком коротко для резюме — пришли файл или полный текст.")
+                    return
+                await app.set_mode(uid, "")
+                async with app.lock(uid):
+                    await app.process_resume(uid, "resume.txt", None, t)
+            else:
+                if len(t) < VACANCY_MIN:
+                    await m.answer("Это слишком коротко для вакансии. " + VACANCY_HELP)
+                    return
+                await app.set_mode(uid, "")
+                await app.store.kv_set(f"vac_text:{uid}", t[:VACANCY_MAX])
+                await send_letter(m, u, t[:VACANCY_MAX])
+        except Exception:
+            log.exception("text from %s failed", uid)
 
     @r.message(F.text & ~F.text.startswith("/"))
     async def text(m: Message):
@@ -692,6 +760,9 @@ def build_router(app: App) -> Router:
             if u["step"] == "key":
                 await app.say(uid, RESUME_HELP)
             return
+        if (b := app.pending.get(uid)) and not b["task"].done():
+            await gather(m, u, b["kind"], t)              # продолжение того же длинного текста
+            return
         edit = await app.store.kv_get(f"edit:{uid}")
         if edit:
             await app.store.kv_set(f"edit:{uid}", "")
@@ -708,26 +779,15 @@ def build_router(app: App) -> Router:
                 await app.edit_profile(uid, salary_min=int(digits) if digits and int(digits) >= 10000 else None)
             await app.show_profile(uid, final=u["step"] == "review")
             return
-        if u["step"] == "resume" or await app.store.kv_get(f"await_cv:{uid}") == "1":
-            if len(t) < 300:
-                await m.answer("Слишком коротко для резюме — пришли файл или полный текст.")
-                return
-            await app.store.kv_set(f"await_cv:{uid}", "0")
-            async with app.lock(uid):
-                await app.process_resume(uid, "resume.txt", None, t)
+        if u["step"] == "resume" or await app.in_mode(uid, "cv"):
+            await gather(m, u, "cv", t)
             return
         if u["step"] != "active":
             await next_step(uid)
             return
         # текст вакансии: после /letter или просто длинное сообщение
-        waiting = await app.store.kv_get(f"await_vac:{uid}") == "1"
-        if waiting or len(t) >= 300:
-            if len(t) < VACANCY_MIN:
-                await m.answer("Это слишком коротко для вакансии. " + VACANCY_HELP)
-                return
-            await app.store.kv_set(f"await_vac:{uid}", "0")
-            await app.store.kv_set(f"vac_text:{uid}", t[:VACANCY_MAX])
-            await send_letter(m, u, t[:VACANCY_MAX])
+        if await app.in_mode(uid, "vac") or len(t) >= 300:
+            await gather(m, u, "vac", t)
             return
         await m.answer("Чтобы написать сопроводительное, отправь /letter и затем текст вакансии.")
 
