@@ -5,6 +5,10 @@ services:
     container_name: job_watch
     restart: unless-stopped
     env_file: .env
+    environment:
+      # меньше пулов glibc и возврат освобождённой памяти системе — после разбора страниц RSS не остаётся на пике
+      MALLOC_ARENA_MAX: "2"
+      MALLOC_TRIM_THRESHOLD_: "131072"
     volumes:
       - ./data:/data
       - ./config.toml:/app/config.toml:ro     # фильтры и источники меняются без пересборки
@@ -15,7 +19,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    mem_limit: 128m
+    mem_limit: 192m        # aiogram 3 + pydantic сами по себе ~110 МБ, рабочий пик бота ~175 МБ
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
