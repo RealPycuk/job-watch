@@ -44,8 +44,10 @@ VACANCY_HELP = ("✍️ Вставь текст вакансии — назва�
                 "или пришли файлом PDF, DOCX, TXT. Напишу сопроводительное по нему и твоему резюме.\n\n"
                 "Ссылку не открываю: скопируй описание со страницы (hh.ru, сайт компании, пост в канале).")
 VACANCY_MIN, VACANCY_MAX = 150, 8000
+EDIT_NAMES = {"city": "город", "roles": "роли", "salary": "зарплату"}
 MODE_TTL = 15 * 60          # «жду резюме / вакансию» после /cv и /letter действует 15 минут
 PASTE_GAP = 4.0             # длинный текст Telegram режет на части по 4096 — ждём остальные столько секунд
+EDIT_MAX = 200              # ответ на «город / роли / зарплата» короче; длинный текст — это не ответ, а вакансия или резюме
 _sleep = asyncio.sleep
 RESUME_HELP = "📎 Пришли резюме файлом (PDF, DOCX, TXT) или вставь текстом одним сообщением."
 
@@ -88,6 +90,17 @@ class App:
         """Один режим ожидания ввода за раз: cv — резюме, vac — текст вакансии, '' — ничего."""
         await self.store.kv_set(f"await_cv:{uid}", str(time.time()) if mode == "cv" else "0")
         await self.store.kv_set(f"await_vac:{uid}", str(time.time()) if mode == "vac" else "0")
+        await self.store.kv_set(f"edit:{uid}", "")
+
+    async def take_edit(self, uid: int) -> str:
+        """Какое поле профиля ждёт ответа («city», «roles», «salary») — ожидание одноразовое и живёт MODE_TTL."""
+        field, _, since = (await self.store.kv_get(f"edit:{uid}") or "").partition(":")
+        if field:
+            await self.store.kv_set(f"edit:{uid}", "")
+        try:
+            return field if time.time() - float(since) < MODE_TTL else ""
+        except ValueError:
+            return ""
 
     async def in_mode(self, uid: int, mode: str) -> bool:
         try:
@@ -576,7 +589,8 @@ def build_router(app: App) -> Router:
                    "roles": "🧭 Напиши роли через запятую — по ним ищутся вакансии (например: devops, sre, linux).",
                    "salary": "💰 Минимальная зарплата в рублях в месяц числом, или 0 — не важно."}
         if action in prompts:
-            await app.store.kv_set(f"edit:{uid}", action)
+            await app.set_mode(uid, "")
+            await app.store.kv_set(f"edit:{uid}", f"{action}:{time.time()}")
             await app.say(uid, prompts[action])
         elif action == "level":
             await app.say(uid, "📈 Твой уровень:", reply_markup=kb([[(n, f"lv:{k}") for k, n in LEVELS.items()]]))
@@ -775,9 +789,11 @@ def build_router(app: App) -> Router:
         if (b := app.pending.get(uid)) and not b["task"].done():
             await gather(m, u, b["kind"], t)              # продолжение того же длинного текста
             return
-        edit = await app.store.kv_get(f"edit:{uid}")
+        edit = await app.take_edit(uid)
+        if edit and (len(t) > EDIT_MAX or "\n" in t):
+            await m.answer(f"Это не похоже на ответ про {EDIT_NAMES[edit]} — профиль не менял.")
+            edit = ""
         if edit:
-            await app.store.kv_set(f"edit:{uid}", "")
             if edit == "city":
                 await app.edit_profile(uid, city=t[:60])
             elif edit == "roles":

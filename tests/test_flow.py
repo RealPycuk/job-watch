@@ -152,6 +152,20 @@ class Flow(unittest.TestCase):
                         await msg("Системный администратор\n" + "Требования: Linux, сети, Nginx. " * 15)
                         profile_kept = (await h.store.user(FRIEND))["profile"] == profile_before
 
+                        # нажал «Роли» и не ответил, потом вставил вакансию — это письмо, а не новые роли
+                        await click("p:roles")
+                        letters_before = len([t for t in texts() if "Письмо." in t])
+                        await msg("Мы — продуктовая IT-компания, которая 12 лет делает ЖКХ эффективнее.\n"
+                                  + "Ищем DevOps: Kubernetes, Terraform, Ansible, мониторинг. " * 6)
+                        not_roles = [t for t in texts() if "не похоже на ответ про роли" in t]
+                        roles_letter = len([t for t in texts() if "Письмо." in t]) - letters_before
+                        roles_kept = (await h.store.user(FRIEND))["profile"] == profile_before
+
+                        # ожидание ответа про роли истекло — короткий текст роли тоже не меняет
+                        await h.store.kv_set(f"edit:{FRIEND}", f"roles:{time.time() - 3600}")
+                        await msg("devops, sre")
+                        stale_kept = (await h.store.user(FRIEND))["profile"] == profile_before
+
                         # резюме по ошибке — вернуть прежний профиль
                         await msg("/cv")
                         await msg("Совсем другое резюме. " * 30)
@@ -181,6 +195,7 @@ class Flow(unittest.TestCase):
                                 too_short=too_short, letter_msg=letter_msg, letter_prompt=letter_prompt, again=again, hint=hint,
                                 vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"),
                                 two_parts=two_parts, letters_two=letters_two, profile_kept=profile_kept,
+                                not_roles=not_roles, roles_letter=roles_letter, roles_kept=roles_kept, stale_kept=stale_kept,
                                 replaced=replaced, restored=restored, file_prompt=file_prompt, file_letter=file_letter,
                                 file_profile_kept=file_profile_kept, bad_file=bad_file)
 
@@ -211,6 +226,10 @@ class Flow(unittest.TestCase):
         self.assertIn("Kubernetes", r["two_parts"])
         self.assertIn("Terraform", r["two_parts"])
         self.assertTrue(r["profile_kept"])
+        self.assertEqual(len(r["not_roles"]), 1)
+        self.assertEqual(r["roles_letter"], 1)
+        self.assertTrue(r["roles_kept"])
+        self.assertTrue(r["stale_kept"])
         self.assertTrue(r["replaced"])
         self.assertTrue(r["restored"])
         self.assertIn("ВАКАНСИЯ: SRE-инженер", r["file_prompt"])
