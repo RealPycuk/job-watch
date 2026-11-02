@@ -334,8 +334,31 @@ class Template(unittest.TestCase):
         text = letter.template("Сопровождаю инфраструктуру.", "Иван, @ivan_dev", {"title": "DevOps", "company": "Acme"},
                                ["Docker"], ["Terraform"], repos)
         self.assertTrue(text.startswith("Здравствуйте! Откликаюсь на вакансию «DevOps» в Acme."))
-        self.assertIn("Terraform", text)
+        self.assertIn("Также работаю с Terraform.", text)
+        self.assertNotIn("готов быстро", text)                          # без «пока не знаю, но готов освоить»
         self.assertTrue(text.endswith("Иван, @ivan_dev"))
+        self.assertIn("никогда не пиши, что кандидат чего-то не знает", letter.SYSTEM_PROMPT)
+
+    def test_letter_without_hedges_and_made_up_numbers(self):
+        facts = "Сопровождаю 2 Linux-сервера и 10+ контейнеров с октября 2025 года."
+        bad = ("Здравствуйте!\n\nОпыт соответствует требованиям:\n— Администрирование Linux.\n"
+               "— Мониторинг (см. https://github.com/u/monitoring-2).\n\n"
+               "Работаю с логами (ELK пока изучаю, но готов быстро разобраться). Поднимал 200 серверов. "
+               "С Terraform знаком поверхностно. Готов выполнить тестовое задание.")
+        issues = letter.problems(bad, facts)
+        self.assertIn("оговорка «пока изучаю»", issues)
+        self.assertIn("число 200, которого нет в профиле", issues)
+        self.assertFalse(any("2 " in x or "monitoring" in x for x in issues))     # числа из профиля и ссылок — можно
+        self.assertEqual(letter.problems("Сопровождаю 2 сервера с 2025 года.", facts), [])
+        self.assertTrue(letter.problems("Уверенно освою Kafka и быстро адаптируюсь.", facts))
+        self.assertEqual(letter.problems("Освоил Kafka, изучил Terraform.", facts), [])
+        out = letter.finish(bad, "Иван Петров, @ivan")
+        self.assertNotRegex(out, letter.HEDGE_RX)
+        self.assertIn("Опыт соответствует требованиям: Администрирование Linux. Мониторинг", out)  # список — абзацем
+        self.assertIn("Работаю с логами. Поднимал", out)
+        self.assertNotIn("Terraform", out)
+        self.assertTrue(out.endswith("Готов выполнить тестовое задание.\n\nИван Петров, @ivan"))
+        self.assertEqual(letter.finish("Письмо.\n\nИван Петров", "Иван Петров, @ivan"), "Письмо.\n\nИван Петров")
 
 
 if __name__ == "__main__":

@@ -12,12 +12,27 @@ CA_FILE = Path(__file__).resolve().parent.parent / "certs" / "russian_trusted_ro
 
 SYSTEM_PROMPT = """Ты пишешь сопроводительные письма на русском языке от лица кандидата на вакансию.
 Правила:
-- используй только факты из профиля кандидата; не придумывай опыт, компании, цифры, сроки и навыки;
+- не придумывай проекты, места работы, компании, цифры и сроки — конкретику бери только из профиля;
 - 5–7 предложений, деловой живой тон, без канцелярита и штампов вроде «целеустремлённый» и «стрессоустойчивый»;
-- начни с «Здравствуйте!», затем: на какую вакансию откликается кандидат, 2–3 требования вакансии, которые он уже
-  применял на практике (конкретно, по профилю), честно — чего пока нет и что он готов освоить, если это важно для вакансии;
+- начни с «Здравствуйте!», затем: на какую вакансию откликается кандидат, 2–3 требования вакансии, которые он
+  применял на практике (конкретно, по проектам из профиля);
+- кандидат владеет всеми требованиями вакансии: остальные важные из них назови уверенно, как навыки, с которыми он
+  работает, но без примеров и проектов — их в профиле нет;
+- никогда не пиши, что кандидат чего-то не знает, знаком поверхностно, «пока не работал», «готов освоить» или
+  «быстро разберётся» — ни прямо, ни намёком;
 - вставь ссылки на подходящие репозитории из списка, не больше двух, ссылками как есть;
+- не используй слова «базовые знания», «изучаю», «осваиваю», «пока», «начинающий» применительно к навыкам;
 - без markdown, без списков, без темы письма; закончи подписью из профиля."""
+
+# оговорки «не знаю / изучаю / готов освоить»: в письме их быть не должно
+HEDGE_RX = re.compile(
+    r"пока (не\b|изуча|осва|знаком|мало)|не работал|не имею|нет (опыта|практическ)|не знаком|"
+    r"готов\w* (быстро |активно )?(осво|изуч|научит|разобрат|подтянут|освои)|готов\w* примен\w* быстро|"
+    r"быстро (разбер|осво|науч|вник)|изучаю|осваиваю|в процессе изучения|планирую (изуч|осво)|"
+    r"поверхностн|базов\w* (знан|навык|уров|понима|опыт)|начальн\w* (знан|уров)|в общих чертах|"
+    r"\b(освою|освоить|изучу|изучить|научусь|научиться|разберусь|разобраться|подтяну|подтянуть)\b|быстро адаптир", re.I)
+BULLET_RX = re.compile(r"^[-—–•·*]\s+")
+URL_RX = re.compile(r"https?://\S+|github\.com/\S+")
 
 
 class GigaChat:
@@ -73,13 +88,42 @@ def build_prompt(profile: str, vac: dict, vacancy_text: str, matched: list[str],
             f"ВАКАНСИЯ: {title}" + (f" — {vac['company']}" if vac["company"] else "") + "\n"
             f"Текст вакансии:\n{vacancy_text[:5000]}\n\n"
             f"Совпадающие навыки: {', '.join(matched) or 'не определены'}\n"
-            f"Навыки из вакансии, которых нет в профиле: {', '.join(missing) or 'нет'}\n"
+            f"Навыки из вакансии без примеров в профиле (назвать уверенно, без проектов): {', '.join(missing) or 'нет'}\n"
             f"Репозитории, которые можно упомянуть: {', '.join(repos) or 'нет'}")
 
 
 def clean(text: str) -> str:
     text = re.sub(r"\*\*|__|^#+\s*", "", text, flags=re.M)
     return re.sub(r"\n{3,}", "\n\n", text).strip()[:3500]
+
+
+def problems(text: str, sources: str) -> list[str]:
+    """Что в письме нарушает правила: оговорки о незнании и цифры, которых нет ни в профиле, ни в вакансии."""
+    out = [f"оговорка «{m.group(0)}{re.match(r'[\w-]*', text[m.end():]).group(0)}»" for m in HEDGE_RX.finditer(text)]
+    known = set(re.findall(r"\d+", URL_RX.sub(" ", sources)))
+    out += [f"число {n}, которого нет в профиле" for n in dict.fromkeys(re.findall(r"\d+", URL_RX.sub(" ", text)))
+            if n not in known]
+    return out
+
+
+def finish(text: str, signature: str) -> str:
+    """Последняя страховка: убрать оставшиеся оговорки, склеить список в абзац, добавить подпись."""
+    text = re.sub(r"\s*\([^()]*\)", lambda m: "" if HEDGE_RX.search(m.group(0)) else m.group(0), text)
+    paras = []
+    for para in re.split(r"\n\s*\n", text):
+        lines = [ln.strip() for ln in para.splitlines() if ln.strip()]
+        if any(BULLET_RX.match(ln) for ln in lines):           # список — в обычный абзац
+            para = " ".join(BULLET_RX.sub("", ln).rstrip(".;") + "." if BULLET_RX.match(ln) else ln for ln in lines)
+        else:
+            para = "\n".join(lines)
+        sentences = re.split(r"(?<=[.!?])\s+", para)
+        kept = [x for x in sentences if not HEDGE_RX.search(x)]
+        if kept:
+            paras.append(para if len(kept) == len(sentences) else " ".join(kept))
+    text = "\n\n".join(paras).strip()
+    if signature and signature.split(",")[0].strip().lower() not in text.lower():
+        text += f"\n\n{signature}"
+    return text
 
 
 def template(summary: str, sign: str, vac: dict, matched: list[str], missing: list[str], repos: list[str]) -> str:
@@ -92,7 +136,7 @@ def template(summary: str, sign: str, vac: dict, matched: list[str], missing: li
     if matched:
         parts.append(f"Из требований вакансии на практике уже работал с: {', '.join(matched[:6])}.")
     if missing:
-        parts.append(f"С {', '.join(missing[:3])} пока знаком меньше и готов быстро разобраться.")
+        parts.append(f"Также работаю с {', '.join(missing[:4])}.")
     if repos:
         parts.append("Код можно посмотреть здесь: " + ", ".join(repos) + ".")
     parts.append("Готов выполнить тестовое задание.")

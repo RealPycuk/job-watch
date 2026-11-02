@@ -138,6 +138,17 @@ class Flow(unittest.TestCase):
                         await msg("просто фраза")
                         hint = texts()[-1]
 
+                        # кнопки внизу работают как команды
+                        await msg(A.B_PAUSE)
+                        paused = (await h.store.user(FRIEND))["paused"]
+                        await msg(A.B_CONTINUE)
+                        resumed = (await h.store.user(FRIEND))["paused"]
+                        await msg(A.B_LETTER)
+                        letter_btn = texts()[-1]
+                        await msg(A.B_PROFILE)
+                        profile_btn = texts()[-1]
+                        done_menu = any(isinstance(c, SendMessage) and c.reply_markup == A.MENU for c in session.calls)
+
                         # вакансия двумя сообщениями (Telegram режет длинный текст) — одно письмо по обеим частям
                         letters_before = len([t for t in texts() if "Письмо." in t])
                         await msg("/letter")
@@ -195,7 +206,9 @@ class Flow(unittest.TestCase):
                                 too_short=too_short, letter_msg=letter_msg, letter_prompt=letter_prompt, again=again, hint=hint,
                                 vac_text=await h.store.kv_get(f"vac_text:{FRIEND}"),
                                 two_parts=two_parts, letters_two=letters_two, profile_kept=profile_kept,
-                                not_roles=not_roles, roles_letter=roles_letter, roles_kept=roles_kept, stale_kept=stale_kept,
+                                paused=paused, resumed=resumed, letter_btn=letter_btn, profile_btn=profile_btn,
+                                done_menu=done_menu, not_roles=not_roles, roles_letter=roles_letter, roles_kept=roles_kept,
+                                stale_kept=stale_kept,
                                 replaced=replaced, restored=restored, file_prompt=file_prompt, file_letter=file_letter,
                                 file_profile_kept=file_profile_kept, bad_file=bad_file)
 
@@ -220,7 +233,11 @@ class Flow(unittest.TestCase):
         self.assertIn("Тестирую.", r["letter_prompt"])                    # факты из резюме пользователя
         self.assertIn("Совпадающие навыки: Python", r["letter_prompt"])
         self.assertIn("Здравствуйте! Письмо.", r["again"])
-        self.assertIn("/letter", r["hint"])
+        self.assertIn(A.B_LETTER, r["hint"])
+        self.assertEqual((r["paused"], r["resumed"]), (1, 0))
+        self.assertEqual(r["letter_btn"], A.VACANCY_HELP)
+        self.assertIn("Казань", r["profile_btn"])
+        self.assertTrue(r["done_menu"])                           # после «Готово» пришли кнопки
         self.assertIn("SRE-инженер", r["vac_text"])                      # последняя присланная вакансия (файлом)
         self.assertEqual(r["letters_two"], 1)
         self.assertIn("Kubernetes", r["two_parts"])
