@@ -228,6 +228,8 @@ class Flow(unittest.TestCase):
         self.assertTrue(any("По приглашению зашёл" in t for t in r["owner_msgs"]))
         self.assertIn("слишком коротко", r["too_short"])
         self.assertIn("Здравствуйте! Письмо.", r["letter_msg"])
+        self.assertTrue(r["letter_msg"].startswith("<pre>Здравствуйте!"))           # копируется одним нажатием
+        self.assertTrue(r["letter_msg"].endswith("</pre>"))                          # без пометки «GigaChat»
         self.assertIn("ВАКАНСИЯ: Junior QA Engineer", r["letter_prompt"])
         self.assertIn("pytest", r["letter_prompt"])
         self.assertIn("Тестирую.", r["letter_prompt"])                    # факты из резюме пользователя

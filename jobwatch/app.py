@@ -60,6 +60,11 @@ MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for r
 MENU_VERSION = "1"
 
 
+def letter_msg(text: str, how: str) -> str:
+    """Письмо — блоком <pre>: в Telegram он копируется целиком одним нажатием. Пометка — только если это не GigaChat."""
+    return f"<pre>{e(text)}</pre>" + ("" if how == "GigaChat" else f"\n<i>{e(how)}</i>")
+
+
 def kb(rows) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[Btn(text=t, callback_data=d) for t, d in row] for row in rows])
 
@@ -567,7 +572,7 @@ def build_router(app: App) -> Router:
             await note.delete()
         except Exception:
             pass
-        await m.answer(f"{e(out)}\n\n<i>— {e(how)}</i>", link_preview_options=NO_PREVIEW,
+        await m.answer(letter_msg(out, how), link_preview_options=NO_PREVIEW,
                        reply_markup=kb([[("🔁 Другой вариант", "lt:again")]]))
 
     @r.callback_query(F.data == "lt:again")
@@ -722,7 +727,7 @@ def build_router(app: App) -> Router:
             await c.answer("✍️ Пишу письмо…")
             async with app.lock(uid):
                 text, how = await app.write_letter(u, row)
-            await c.message.reply(f"{e(text)}\n\n<i>— {e(how)}</i>", link_preview_options=NO_PREVIEW,
+            await c.message.reply(letter_msg(text, how), link_preview_options=NO_PREVIEW,
                                   reply_markup=kb([[("🔁 Другой вариант", f"l:{row['id']}")]]))
 
     # ───────────── свободный ввод: ключ, резюме, правки ─────────────
