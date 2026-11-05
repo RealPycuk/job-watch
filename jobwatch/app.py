@@ -14,10 +14,10 @@ import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup,
+from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup,
                            KeyboardButton, LinkPreviewOptions, Message, ReplyKeyboardMarkup)
 
-from . import analyze, config, letter, resume, sources
+from . import analyze, config, letter, resume, sources, tailor
 from .models import Vacancy
 from .profile import FORMATS, LEVELS, Profile, compile_profile
 from .secret import Vault
@@ -58,6 +58,13 @@ B_LETTER, B_PROFILE, B_SAVED, B_STATUS, B_PAUSE, B_CONTINUE = (
 MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in (
     (B_LETTER, B_PROFILE), (B_SAVED, B_STATUS), (B_PAUSE, B_CONTINUE))], resize_keyboard=True, is_persistent=True)
 MENU_VERSION = "1"
+# владельцу — ещё кнопка «резюме под вакансию»
+B_TAILOR = "📄 Резюме под вакансию"
+MENU_OWNER = ReplyKeyboardMarkup(keyboard=[*MENU.keyboard, [KeyboardButton(text=B_TAILOR)]], resize_keyboard=True,
+                                 is_persistent=True)
+MENU_OWNER_VERSION = "owner-1"
+TAILOR_HELP = ("📄 Пришли текст вакансии (можно несколькими сообщениями) или файлом PDF, DOCX, TXT — "
+               "перепишу твоё резюме под неё и пришлю файлом .docx.")
 
 
 def letter_msg(text: str, how: str) -> str:
@@ -84,6 +91,12 @@ class App:
     def is_owner(self, uid: int) -> bool:
         return uid == self.env.owner_id
 
+    def menu_for(self, uid: int) -> ReplyKeyboardMarkup:
+        return MENU_OWNER if self.is_owner(uid) else MENU
+
+    def menu_version(self, uid: int) -> str:
+        return MENU_OWNER_VERSION if self.is_owner(uid) else MENU_VERSION
+
     def make_giga(self, key: str) -> letter.GigaChat:
         return letter.GigaChat(self.http, key, scope=self.env.gigachat_scope, model=self.env.gigachat_model,
                                api_url=self.env.gigachat_api_url)
@@ -103,6 +116,7 @@ class App:
         """Один режим ожидания ввода за раз: cv — резюме, vac — текст вакансии, '' — ничего."""
         await self.store.kv_set(f"await_cv:{uid}", str(time.time()) if mode == "cv" else "0")
         await self.store.kv_set(f"await_vac:{uid}", str(time.time()) if mode == "vac" else "0")
+        await self.store.kv_set(f"await_tail:{uid}", str(time.time()) if mode == "tail" else "0")
         await self.store.kv_set(f"edit:{uid}", "")
 
     async def take_edit(self, uid: int) -> str:
@@ -140,11 +154,14 @@ class App:
     async def announce_menu(self):
         """Активным пользователям, у которых ещё нет кнопок внизу, — один раз прислать их."""
         for u in await self.store.users("active"):
-            key = f"menu:{u['tg_id']}"
-            if await self.store.kv_get(key) != MENU_VERSION:
-                await self.say(u["tg_id"], "⌨️ Внизу появились кнопки — команды через «/» набирать больше не нужно.",
-                               reply_markup=MENU)
-                await self.store.kv_set(key, MENU_VERSION)
+            uid, key = u["tg_id"], f"menu:{u['tg_id']}"
+            have = await self.store.kv_get(key)
+            if have == self.menu_version(uid):
+                continue
+            text = ("⌨️ Внизу появились кнопки — команды через «/» набирать больше не нужно." if not have else
+                    f"⌨️ Новая кнопка «{B_TAILOR}»: резюме, переписанное под вакансию, файлом .docx.")
+            await self.say(uid, text, reply_markup=self.menu_for(uid))
+            await self.store.kv_set(key, self.menu_version(uid))
 
     async def say(self, uid: int, text: str, **kw):
         try:
@@ -205,7 +222,7 @@ class App:
         await self.store.deliver(uid, vid, status="sent", fingerprint=fp, location=d.location,
                                  matched=d.matched, missing=d.missing)
         await self.say(uid, self.card(v, d.location, analyze.salary(v), d.matched, d.missing, d.level),
-                       reply_markup=self.vac_buttons(vid))
+                       reply_markup=self.vac_buttons(vid, owner=self.is_owner(uid)))
         await asyncio.sleep(1.1)
         return True
 
@@ -280,9 +297,12 @@ class App:
         return "\n".join(x for x in lines if x)
 
     @staticmethod
-    def vac_buttons(vid: int, saved: bool = False) -> InlineKeyboardMarkup:
-        return kb([[("✍️ Сопроводительное", f"l:{vid}"), ("📄 Текст", f"f:{vid}")],
-                   [("✅ Сохранено" if saved else "⭐ Сохранить", f"s:{vid}"), ("🙈 Скрыть", f"h:{vid}")]])
+    def vac_buttons(vid: int, saved: bool = False, owner: bool = False) -> InlineKeyboardMarkup:
+        rows = [[("✍️ Сопроводительное", f"l:{vid}"), ("📄 Текст", f"f:{vid}")],
+                [("✅ Сохранено" if saved else "⭐ Сохранить", f"s:{vid}"), ("🙈 Скрыть", f"h:{vid}")]]
+        if owner:
+            rows.append([("📄 Резюме под вакансию", f"r:{vid}")])
+        return kb(rows)
 
     # ───────────── письмо ─────────────
 
@@ -317,6 +337,28 @@ class App:
                 return letter.template(p.summary, p.signature, vac, matched, missing, repos), \
                     f"шаблон (GigaChat: {str(ex)[:80]})"
         return letter.template(p.summary, p.signature, vac, matched, missing, repos), "шаблон"
+
+    # ───────────── резюме под вакансию (владелец) ─────────────
+
+    async def tailor_resume(self, u, vacancy: str) -> tuple[bytes, str, str]:
+        """→ (docx, что изменено, чем писали). Claude при наличии ключа, при сбое или без ключа — GigaChat."""
+        base = u["resume"] or ""
+        if not base.strip():
+            raise RuntimeError("в профиле нет текста резюме — загрузи его через /cv")
+        errors = []
+        llms = []
+        if self.env.anthropic_key:
+            llms.append(("Claude", tailor.Claude(self.env.anthropic_key, self.env.claude_model)))
+        if giga := self.giga_for(u):
+            llms.append(("GigaChat", giga))
+        for name, llm in llms:
+            try:
+                body, changes = await tailor.rewrite(llm, base, vacancy)
+                return tailor.to_docx(body), changes, name
+            except Exception as ex:
+                log.warning("tailor via %s failed: %s", name, ex)
+                errors.append(f"{name}: {str(ex)[:120]}")
+        raise RuntimeError("; ".join(errors) or "нет ни ключа Claude, ни ключа GigaChat")
 
     # ───────────── профиль ─────────────
 
@@ -427,8 +469,8 @@ def build_router(app: App) -> Router:
             await m.answer("👋 Я присылаю новые вакансии под твой профиль. Основное — кнопками внизу.\n\n"
                            "/cv — загрузить новое резюме\n/key — сменить ключ GigaChat\n/delete — удалить мои данные"
                            + ("\n\n<b>Админ:</b> /invite [id], /revoke id, /users, /check" if app.is_owner(uid) else ""),
-                           reply_markup=MENU)
-            await app.store.kv_set(f"menu:{uid}", MENU_VERSION)
+                           reply_markup=app.menu_for(uid))
+            await app.store.kv_set(f"menu:{uid}", app.menu_version(uid))
         else:
             await next_step(uid)
 
@@ -536,7 +578,8 @@ def build_router(app: App) -> Router:
         for row in rows:
             v = app.store.to_vacancy(row)
             await m.answer(app.card(v, row["location"], row["salary"], json.loads(row["matched"]), json.loads(row["missing"])),
-                           reply_markup=app.vac_buttons(row["id"], saved=True), link_preview_options=NO_PREVIEW)
+                           reply_markup=app.vac_buttons(row["id"], saved=True, owner=app.is_owner(u["tg_id"])),
+                           link_preview_options=NO_PREVIEW)
 
     @r.message(Command("pause", "continue"))
     @r.message(F.text.in_({B_PAUSE, B_CONTINUE}))
@@ -573,8 +616,8 @@ def build_router(app: App) -> Router:
             await note.delete()
         except Exception:
             pass
-        await m.answer(letter_msg(out, how), link_preview_options=NO_PREVIEW,
-                       reply_markup=kb([[("🔁 Другой вариант", "lt:again")]]))
+        rows = [[("🔁 Другой вариант", "lt:again")]] + ([[("📄 Резюме под вакансию", "lt:cv")]] if app.is_owner(uid) else [])
+        await m.answer(letter_msg(out, how), link_preview_options=NO_PREVIEW, reply_markup=kb(rows))
 
     @r.callback_query(F.data == "lt:again")
     async def letter_again(c: CallbackQuery):
@@ -586,6 +629,46 @@ def build_router(app: App) -> Router:
             return
         await c.answer()
         await send_letter(c.message, u, text)
+
+    @r.message(Command("tailor"))
+    @r.message(F.text == B_TAILOR)
+    async def tailor_cmd(m: Message):
+        if (u := await access(m)) and u["step"] == "active" and app.is_owner(m.from_user.id):
+            await app.set_mode(m.from_user.id, "tail")
+            await m.answer(TAILOR_HELP)
+
+    async def send_tailored(m: Message, u, text: str):
+        uid = u["tg_id"]
+        if app.lock(uid).locked():
+            await m.answer("Уже работаю над прошлым запросом, подожди")
+            return
+        note = await m.answer("📄 Переписываю резюме под вакансию… (до пары минут)")
+        try:
+            async with app.lock(uid):
+                doc, changes, how = await app.tailor_resume(u, text)
+        except Exception as ex:
+            await m.answer(f"⚠️ Не получилось: {e(str(ex)[:300])}")
+            return
+        finally:
+            try:
+                await note.delete()
+            except Exception:
+                pass
+        caption = f"📄 Резюме под вакансию ({e(how)}). Проверь перед отправкой."
+        if changes:
+            caption += f"\n\n<b>Что поменял:</b>\n{e(changes[:800])}"
+        await m.answer_document(BufferedInputFile(doc, tailor.filename(text)), caption=caption[:1024])
+
+    @r.callback_query(F.data == "lt:cv")
+    async def letter_cv(c: CallbackQuery):
+        if not (u := await access(c)) or not app.is_owner(c.from_user.id):
+            return
+        text = await app.store.kv_get(f"vac_text:{c.from_user.id}")
+        if not text:
+            await c.answer("Текст вакансии не сохранился — пришли его ещё раз", show_alert=True)
+            return
+        await c.answer()
+        await send_tailored(c.message, u, text)
 
     @r.message(Command("key"))
     async def key_cmd(m: Message):
@@ -645,8 +728,8 @@ def build_router(app: App) -> Router:
         elif action == "done" and u["step"] == "review":
             await app.store.update_user(uid, step="active", activated_at=time.time())
             await app.say(uid, "✅ Готово! Новые вакансии буду присылать по мере появления. Сначала — подходящие за последние 3 дня:",
-                          reply_markup=MENU)
-            await app.store.kv_set(f"menu:{uid}", MENU_VERSION)
+                          reply_markup=app.menu_for(uid))
+            await app.store.kv_set(f"menu:{uid}", app.menu_version(uid))
             n = await app.backfill(uid)
             if not n:
                 await app.say(uid, "За последние 3 дня подходящих не нашлось — пришлю, как только появятся.")
@@ -703,7 +786,7 @@ def build_router(app: App) -> Router:
             await c.answer("Вакансия не найдена", show_alert=True)
         return row
 
-    @r.callback_query(F.data.regexp(r"^[sfhl]:\d+$"))
+    @r.callback_query(F.data.regexp(r"^[sfhlr]:\d+$"))
     async def vac_btn(c: CallbackQuery):
         if not (u := await access(c)) or not (row := await vac_of(c)):
             return
@@ -711,7 +794,7 @@ def build_router(app: App) -> Router:
         if act == "s":
             new = not row["saved"]
             await app.store.mark(uid, row["id"], saved=new)
-            await c.message.edit_reply_markup(reply_markup=app.vac_buttons(row["id"], saved=new))
+            await c.message.edit_reply_markup(reply_markup=app.vac_buttons(row["id"], saved=new, owner=app.is_owner(uid)))
             await c.answer("Сохранено" if new else "Убрано из сохранённых")
         elif act == "h":
             await app.store.mark(uid, row["id"], hidden=True)
@@ -721,6 +804,13 @@ def build_router(app: App) -> Router:
             await c.answer()
             text = await sources.full_text(app.http, app.store.to_vacancy(row))
             await c.message.reply(e(text[:3800]) or "Текста нет", link_preview_options=NO_PREVIEW)
+        elif act == "r":
+            if not app.is_owner(uid):
+                await c.answer("Недоступно", show_alert=True)
+                return
+            await c.answer("📄 Переписываю резюме…")
+            text = await sources.full_text(app.http, app.store.to_vacancy(row))
+            await send_tailored(c.message, u, text)
         elif act == "l":
             if app.lock(uid).locked():
                 await c.answer("Уже пишу письмо, подожди", show_alert=True)
@@ -739,6 +829,7 @@ def build_router(app: App) -> Router:
             return
         uid = m.from_user.id
         as_resume = u["step"] == "resume" or await app.in_mode(uid, "cv")
+        as_tail = not as_resume and app.is_owner(uid) and await app.in_mode(uid, "tail")
         if not as_resume and u["step"] != "active":
             await next_step(uid)
             return
@@ -759,7 +850,7 @@ def build_router(app: App) -> Router:
             await m.answer(f"⚠️ {e(str(ex))}\n\n{VACANCY_HELP}\n\nЧтобы обновить резюме, отправь /cv и затем файл.")
             return
         await app.store.kv_set(f"vac_text:{uid}", t)
-        await send_letter(m, u, t)
+        await (send_tailored if as_tail else send_letter)(m, u, t)
 
     async def gather(m: Message, u, kind: str, t: str):
         """Части одного длинного текста приходят отдельными сообщениями подряд — собираем их и обрабатываем вместе."""
@@ -795,7 +886,7 @@ def build_router(app: App) -> Router:
                     return
                 await app.set_mode(uid, "")
                 await app.store.kv_set(f"vac_text:{uid}", t[:VACANCY_MAX])
-                await send_letter(m, u, t[:VACANCY_MAX])
+                await (send_tailored if b["kind"] == "tail" else send_letter)(m, u, t[:VACANCY_MAX])
         except Exception:
             log.exception("text from %s failed", uid)
 
@@ -847,6 +938,9 @@ def build_router(app: App) -> Router:
             return
         if u["step"] != "active":
             await next_step(uid)
+            return
+        if app.is_owner(uid) and await app.in_mode(uid, "tail"):
+            await gather(m, u, "tail", t)
             return
         # текст вакансии: после /letter или просто длинное сообщение
         if await app.in_mode(uid, "vac") or len(t) >= 300:

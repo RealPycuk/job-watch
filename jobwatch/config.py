@@ -71,6 +71,8 @@ class Env:
     config_path: Path
     profile_path: Path
     secret: str
+    anthropic_key: str = ""
+    claude_model: str = ""
 
 
 def env() -> Env:
@@ -85,4 +87,6 @@ def env() -> Env:
         config_path=Path(os.environ.get("CONFIG_PATH", "/app/config.toml")),
         profile_path=Path(os.environ.get("PROFILE_PATH", "/app/profile.md")),
         secret=os.environ.get("JOBWATCH_SECRET", "").strip(),
+        anthropic_key=os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+        claude_model=os.environ.get("CLAUDE_MODEL", "").strip(),
     )

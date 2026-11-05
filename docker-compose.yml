@@ -19,7 +19,7 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    mem_limit: 192m        # aiogram 3 + pydantic сами по себе ~110 МБ, рабочий пик бота ~175 МБ
+    mem_limit: 256m        # aiogram 3 + pydantic ~110 МБ, пик бота ~175 МБ; SDK Claude при первом вызове ещё ~45 МБ
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
