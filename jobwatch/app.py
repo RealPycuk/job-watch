@@ -300,7 +300,8 @@ class App:
     async def compose(self, u, vac: dict, text: str, matched: list[str], missing: list[str]) -> tuple[str, str]:
         repos = letter.pick_repos(self.cfg.repos, matched) if self.is_owner(u["tg_id"]) else []
         p = self.profile_of(u)
-        facts = "\n\n".join(x for x in (p.summary, u["resume"] or "", f"Подпись: {p.signature}" if p.signature else "") if x)
+        sign = f"Подпись: {p.signature}" if p.signature else ""
+        facts = letter.facts_for_letter("\n\n".join(x for x in (p.summary, u["resume"] or "", sign) if x))
         giga = self.giga_for(u)
         if giga and facts:
             try:

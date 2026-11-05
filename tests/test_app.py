@@ -352,6 +352,11 @@ class Template(unittest.TestCase):
         self.assertEqual(letter.problems("Сопровождаю 2 сервера с 2025 года.", facts), [])
         self.assertTrue(letter.problems("Уверенно освою Kafka и быстро адаптируюсь.", facts))
         self.assertEqual(letter.problems("Освоил Kafka, изучил Terraform.", facts), [])
+        for hedge in ("Сейчас изучаю Terraform.", "Продолжаю изучать Helm.", "Углубляю знания в Kubernetes.",
+                      "Нахожусь в процессе освоения GitLab CI.", "Активно погружаюсь в Nginx.", "Прохожу курс по Terraform."):
+            self.assertTrue(letter.problems(hedge, facts), hedge)
+        self.assertEqual(letter.facts_for_letter("Навыки: Docker\nИзучаю: Nginx, Helm."),
+                         "Навыки: Docker\nТакже работаю с: Nginx, Helm.")
         out = letter.finish(bad, "Иван Петров, @ivan")
         self.assertNotRegex(out, letter.HEDGE_RX)
         self.assertIn("Опыт соответствует требованиям: Администрирование Linux. Мониторинг", out)  # список — абзацем
