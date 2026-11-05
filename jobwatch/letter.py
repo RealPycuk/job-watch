@@ -67,8 +67,8 @@ class GigaChat:
         self._expires = float(data.get("expires_at", 0)) / 1000 or time.time() + 25 * 60
         return self._token
 
-    async def chat(self, system: str, user: str) -> str:
-        body = {"model": self.model, "temperature": 0.6, "max_tokens": 700, "stream": False,
+    async def chat(self, system: str, user: str, max_tokens: int = 700) -> str:
+        body = {"model": self.model, "temperature": 0.6, "max_tokens": max_tokens, "stream": False,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         async with self.session.post(f"{self.api_url}/chat/completions", json=body, ssl=self.ssl,
                                      headers={"Authorization": f"Bearer {await self.token()}", "Accept": "application/json"},
