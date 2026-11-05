@@ -341,7 +341,7 @@ class App:
     # ───────────── резюме под вакансию (владелец) ─────────────
 
     async def tailor_resume(self, u, vacancy: str) -> tuple[bytes, str, str]:
-        """→ (docx, что изменено, чем писали). Claude при наличии ключа, при сбое или без ключа — GigaChat."""
+        """→ (docx, предупреждение, чем писали). Claude при наличии ключа, при сбое или без ключа — GigaChat."""
         base = u["resume"] or ""
         if not base.strip():
             raise RuntimeError("в профиле нет текста резюме — загрузи его через /cv")
@@ -353,8 +353,8 @@ class App:
             llms.append(("GigaChat", giga))
         for name, llm in llms:
             try:
-                body, changes = await tailor.rewrite(llm, base, vacancy)
-                return tailor.to_docx(body), changes, name
+                body, warning = await tailor.rewrite(llm, base, vacancy)
+                return tailor.to_docx(body), warning, name
             except Exception as ex:
                 log.warning("tailor via %s failed: %s", name, ex)
                 errors.append(f"{name}: {str(ex)[:120]}")
@@ -645,7 +645,7 @@ def build_router(app: App) -> Router:
         note = await m.answer("📄 Переписываю резюме под вакансию… (до пары минут)")
         try:
             async with app.lock(uid):
-                doc, changes, how = await app.tailor_resume(u, text)
+                doc, warning, how = await app.tailor_resume(u, text)
         except Exception as ex:
             await m.answer(f"⚠️ Не получилось: {e(str(ex)[:300])}")
             return
@@ -654,9 +654,7 @@ def build_router(app: App) -> Router:
                 await note.delete()
             except Exception:
                 pass
-        caption = f"📄 Резюме под вакансию ({e(how)}). Проверь перед отправкой."
-        if changes:
-            caption += f"\n\n<b>Что поменял:</b>\n{e(changes[:800])}"
+        caption = f"📄 Резюме под вакансию ({e(how)})" + (f"\n\n{e(warning[:800])}" if warning else "")
         await m.answer_document(BufferedInputFile(doc, tailor.filename(text)), caption=caption[:1024])
 
     @r.callback_query(F.data == "lt:cv")
