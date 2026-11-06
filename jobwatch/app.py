@@ -17,7 +17,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardButton as Btn, InlineKeyboardMarkup,
                            KeyboardButton, LinkPreviewOptions, Message, ReplyKeyboardMarkup)
 
-from . import analyze, config, letter, resume, sources, tailor
+from . import analyze, coach, config, letter, resume, sources, tailor
 from .models import Vacancy
 from .profile import FORMATS, LEVELS, Profile, compile_profile
 from .secret import Vault
@@ -288,6 +288,8 @@ class App:
             lines.append(f"🧩 Совпадает: {e(', '.join(matched))}")
         if missing:
             lines.append(f"➕ Не хватает: {e(', '.join(missing))}")
+        if fit := coach.quick_fit(matched, missing):
+            lines.append(fit)
         if cts := analyze.contacts(v):
             lines.append("✉️ " + " · ".join(f"<code>{e(c)}</code>" for c in cts))
         src = sources.TITLES.get(v.source.split(":")[0], v.source)
@@ -300,6 +302,7 @@ class App:
     def vac_buttons(vid: int, saved: bool = False, owner: bool = False) -> InlineKeyboardMarkup:
         rows = [[("✍️ Сопроводительное", f"l:{vid}"), ("📄 Текст", f"f:{vid}")],
                 [("✅ Сохранено" if saved else "⭐ Сохранить", f"s:{vid}"), ("🙈 Скрыть", f"h:{vid}")]]
+        rows.append([("🎯 Разбор", f"e:{vid}"), ("🎤 Собеседование", f"i:{vid}")])
         if owner:
             rows.append([("📄 Резюме под вакансию", f"r:{vid}")])
         return kb(rows)
@@ -338,6 +341,31 @@ class App:
                     f"шаблон (GigaChat: {str(ex)[:80]})"
         return letter.template(p.summary, p.signature, vac, matched, missing, repos), "шаблон"
 
+    # ───────────── разбор вакансии и собеседование ─────────────
+
+    def llms_for(self, u) -> list:
+        """Чем писать: у владельца с ключом Claude — сначала Claude, затем GigaChat пользователя."""
+        out = []
+        if self.env.anthropic_key and self.is_owner(u["tg_id"]):
+            out.append(("Claude", tailor.Claude(self.env.anthropic_key, self.env.claude_model)))
+        if giga := self.giga_for(u):
+            out.append(("GigaChat", giga))
+        return out
+
+    async def coach_text(self, u, kind: str, vacancy: str) -> str:
+        base = u["resume"] or self.profile_of(u).summary
+        if not base.strip():
+            raise RuntimeError("в профиле нет резюме — загрузи его через /cv")
+        run = coach.evaluate if kind == "e" else coach.interview
+        errors = []
+        for name, llm in self.llms_for(u):
+            try:
+                return await run(llm, base, vacancy)
+            except Exception as ex:
+                log.warning("coach %s via %s failed: %s", kind, name, ex)
+                errors.append(f"{name}: {str(ex)[:120]}")
+        raise RuntimeError("; ".join(errors) or "нет ключа GigaChat — добавь его через /key")
+
     # ───────────── резюме под вакансию (владелец) ─────────────
 
     async def tailor_resume(self, u, vacancy: str) -> tuple[bytes, str, str]:
@@ -346,12 +374,7 @@ class App:
         if not base.strip():
             raise RuntimeError("в профиле нет текста резюме — загрузи его через /cv")
         errors = []
-        llms = []
-        if self.env.anthropic_key:
-            llms.append(("Claude", tailor.Claude(self.env.anthropic_key, self.env.claude_model)))
-        if giga := self.giga_for(u):
-            llms.append(("GigaChat", giga))
-        for name, llm in llms:
+        for name, llm in self.llms_for(u):
             try:
                 body, warning = await tailor.rewrite(llm, base, vacancy)
                 return tailor.to_docx(body), warning, name
@@ -616,7 +639,9 @@ def build_router(app: App) -> Router:
             await note.delete()
         except Exception:
             pass
-        rows = [[("🔁 Другой вариант", "lt:again")]] + ([[("📄 Резюме под вакансию", "lt:cv")]] if app.is_owner(uid) else [])
+        rows = [[("🔁 Другой вариант", "lt:again")], [("🎯 Разбор", "lt:e"), ("🎤 Собеседование", "lt:i")]]
+        if app.is_owner(uid):
+            rows.append([("📄 Резюме под вакансию", "lt:cv")])
         await m.answer(letter_msg(out, how), link_preview_options=NO_PREVIEW, reply_markup=kb(rows))
 
     @r.callback_query(F.data == "lt:again")
@@ -656,6 +681,40 @@ def build_router(app: App) -> Router:
                 pass
         caption = f"📄 Резюме под вакансию ({e(how)})" + (f"\n\n{e(warning[:800])}" if warning else "")
         await m.answer_document(BufferedInputFile(doc, tailor.filename(text)), caption=caption[:1024])
+
+    async def send_coach(m: Message, u, kind: str, text: str):
+        uid = u["tg_id"]
+        if app.lock(uid).locked():
+            await m.answer("Уже работаю над прошлым запросом, подожди")
+            return
+        note = await m.answer("🎯 Разбираю вакансию по твоему резюме…" if kind == "e" else "🎤 Готовлю вопросы к собеседованию…")
+        try:
+            async with app.lock(uid):
+                out = await app.coach_text(u, kind, text)
+        except Exception as ex:
+            await m.answer(f"⚠️ Не получилось: {e(str(ex)[:300])}")
+            return
+        finally:
+            try:
+                await note.delete()
+            except Exception:
+                pass
+        title = letter.title_guess(text)
+        head = ("🎯 <b>Разбор вакансии</b>" if kind == "e" else "🎤 <b>Подготовка к собеседованию</b>") + \
+            (f": {e(title)}" if title else "")
+        for i, part in enumerate(coach.chunks(out)):
+            await m.answer((head + "\n\n" if i == 0 else "") + e(part), link_preview_options=NO_PREVIEW)
+
+    @r.callback_query(F.data.in_({"lt:e", "lt:i"}))
+    async def letter_coach(c: CallbackQuery):
+        if not (u := await access(c)):
+            return
+        text = await app.store.kv_get(f"vac_text:{c.from_user.id}")
+        if not text:
+            await c.answer("Текст вакансии не сохранился — пришли его ещё раз через «✍️ Письмо»", show_alert=True)
+            return
+        await c.answer()
+        await send_coach(c.message, u, c.data[-1], text)
 
     @r.callback_query(F.data == "lt:cv")
     async def letter_cv(c: CallbackQuery):
@@ -784,7 +843,7 @@ def build_router(app: App) -> Router:
             await c.answer("Вакансия не найдена", show_alert=True)
         return row
 
-    @r.callback_query(F.data.regexp(r"^[sfhlr]:\d+$"))
+    @r.callback_query(F.data.regexp(r"^[sfhlrei]:\d+$"))
     async def vac_btn(c: CallbackQuery):
         if not (u := await access(c)) or not (row := await vac_of(c)):
             return
@@ -802,6 +861,10 @@ def build_router(app: App) -> Router:
             await c.answer()
             text = await sources.full_text(app.http, app.store.to_vacancy(row))
             await c.message.reply(e(text[:3800]) or "Текста нет", link_preview_options=NO_PREVIEW)
+        elif act in "ei":
+            await c.answer("🎯 Разбираю вакансию…" if act == "e" else "🎤 Готовлю вопросы…")
+            text = await sources.full_text(app.http, app.store.to_vacancy(row))
+            await send_coach(c.message, u, act, text)
         elif act == "r":
             if not app.is_owner(uid):
                 await c.answer("Недоступно", show_alert=True)
